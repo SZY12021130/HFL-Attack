@@ -1,0 +1,220 @@
+# ============================================================================
+# HFL-Attack 主配置文件
+# 联邦学习 + CKKS 同态加密 + TopK 稀疏化 + PTopk 残差补偿
+# ============================================================================
+# 本文件只保留核心路径所需的配置：
+#   基础 CKKS 加密 FedAvg 训练 + TopK 稀疏化(global_mask_vote 聚合) + PTopk 补偿。
+# 多密钥、TEE、预取、盲化掩码等对比方案配置已全部移除。
+
+# ============================================================================
+# 一、系统配置 (system)
+# ============================================================================
+system:
+  num_clients: 50                    # 参与联邦学习的客户端总数
+  num_rounds: 50                     # 联邦学习总通信轮数
+  num_epochs: 1                      # 每轮本地训练 epoch 数
+  batch_size: 64                     # 本地训练批次大小
+  learning_rate: 0.001               # 本地 SGD 学习率
+  device: "cuda"                     # 训练设备 ("cpu"/"cuda"，GPU 不可用时自动回退 CPU)
+  random_seed: 42                    # 全局随机种子
+
+  # 每轮参与训练的客户端比例 (1.0=全部参与；0.5=半数参与，最常用)
+  client_sampling_rate: 0.5
+
+  # 客户端上传"差值"还是"完整权重"
+  #   true  = 上传 Δ = W_new - W_old，服务器做累加
+  #   false = 上传完整 W_new（需配合 coeff_mod_bit_sizes=[40,20,40] + global_scale=2^20）
+  upload_difference: true
+
+  # 优化器配置
+  optimizer:
+    name: "adam"                     # "sgd" | "adam" | "adamw"
+    lr: 0.001                        # 若设置则覆盖 system.learning_rate
+    momentum: 0.9                    # 仅 name="sgd" 时有效
+
+  # 学习率调度器（可选）
+  lr_scheduler:
+    enabled: false
+    name: "step"                     # "step" | "cosine" | "exponential"
+    step_size: 10
+    gamma: 0.5
+    T_max: 30
+    eta_min: 0.0
+
+
+# ============================================================================
+# 二、数据集配置 (data)
+# ============================================================================
+data:
+  # 支持: ["mnist", "fashion_mnist", "cifar10", "cifar100", "svhn", "emnist"]
+  dataset: "mnist"
+  data_dir: "./data"                 # 数据集本地缓存目录（首次运行自动下载）
+  num_classes: 10                    # 程序会根据 dataset 自动推断，通常无需修改
+  iid: false                         # true=IID 划分；false=Dirichlet Non-IID 划分
+  alpha: 1                           # Dirichlet 浓度参数：越小越 Non-IID（常用 0.1~5.0）
+
+
+# ============================================================================
+# 三、模型配置 (model)
+# ============================================================================
+model:
+  # 常用: ["mlp", "cnn", "lenet", "mobilenetv2", "resnet18", ...]
+  # CKKS 密文膨胀率约 10x~20x，lenet/mlp 适合快速实验
+  name: "lenet"
+  hidden_dims: [256, 128]            # MLP 隐藏层维度
+  dropout: 0.2                       # MLP/CNN Dropout 率
+
+
+# ============================================================================
+# 四、CKKS 同态加密配置 (ckks)
+# ============================================================================
+# 三个参数必须配套使用：
+#   • poly_modulus_degree (N): 决定安全等级和 slot 数量
+#   • coeff_mod_bit_sizes:   系数模数链，总和决定乘法深度
+#   • global_scale:          明文缩放因子（2 的幂次）
+#
+# 推荐预设：
+#   ┌──────────────┬────────┬──────────────────────┬──────────────┐
+#   │ 预设         │ N      │ coeff_mod_bit_sizes  │ global_scale │
+#   ├──────────────┼────────┼──────────────────────┼──────────────┤
+#   │ 轻量快速     │ 4096   │ [40, 20, 40]         │ 2^20         │
+#   │ 标准均衡     │ 8192   │ [40, 20, 40]         │ 2^20         │
+#   │ 高精度长轮次 │ 16384  │ [50, 30, 30, 50]     │ 2^30         │
+#   │ 高精度(差值) │ 8192   │ [60, 40, 40, 60]     │ 2^40         │
+#   └──────────────┴────────┴──────────────────────┴──────────────┘
+# ⚠️ upload_difference=false 时，服务器需对密文做加权平均（scale 平方），
+#    必须使用 [40, 20, 40] + 2^20，否则精度归零。
+ckks:
+  poly_modulus_degree: 8192
+  coeff_mod_bit_sizes: [60,40,40,60]
+  global_scale: 1099511627776        # 2^40
+  slot_packing: true                 # true 可大幅降低通信量，建议保持开启
+
+  # packing: 模型更新打包策略（减少 ciphertext 数量）
+  #   "layerwise" = 逐层加密（默认，兼容原代码）
+  #   "merged"    = 合并所有层后统一分块加密（减少碎片，推荐）
+  packing:
+    strategy: "merged"
+
+  # --------------------------------------------------------------------------
+  # sparsification: 客户端本地包级 TopK/RandK 稀疏化
+  #   客户端本地训练得到明文梯度 → 按 batch 打分选出 TopK batch →
+  #   只上传 0/1 mask（极小）→ 服务器 global_mask_vote 聚合出全局 mask →
+  #   客户端按全局 mask 加密上传对应 batch。
+  #
+  #   batch_size 不应超过 slot_count（poly_modulus_degree // 2 = 4096）
+  # --------------------------------------------------------------------------
+  sparsification:
+    strategy: "topk"                 # "none" | "topk" | "randk"
+    sparsity_rate: 0.1               # 客户端本地保留的 batch 投票比例
+    batch_size: 4096                 # 每个 batch 的大小，建议等于 slot_count
+    seed: 42                         # randk 策略的随机种子
+
+    # TopK 评分方式（仅 strategy="topk" 时生效）
+    #   avg_abs : 绝对值平均值  【默认，最稳定】
+    #   l2_norm : L2 范数       【对大值更敏感】
+    #   l1_norm : L1 范数
+    #   max_abs : 最大绝对值
+    scoring_method: "l2_norm"
+
+    # warmup 期间跳过客户端稀疏化（false = 从一开始就启用）
+    use_warmup_skip_sparse: false
+    warmup_rounds: 2
+
+  # --------------------------------------------------------------------------
+  # ptopk: Packed TopK with Error Feedback（残差补偿，基于 STC 思想）
+  #   客户端维护明文残差累加器，每轮上传前先把残差叠加到当前梯度上再 TopK，
+  #   未被选中的 batch 信息保留在残差中累积到下一轮，避免永久丢失。
+  #   数学形式: r_{t+1} = (Δ_t + r_t) − TopK(Δ_t + r_t);  upload_t = TopK(Δ_t + r_t)
+  #   仅当 sparsification.strategy != "none" 时生效。
+  # --------------------------------------------------------------------------
+  ptopk:
+    enable: true                     # PTopk 总开关
+
+    # 客户端残差补偿器（Error Feedback）
+    client_residual:
+      enabled: true
+      # 跨轮陈旧残差衰减：客户端间歇性参与时，旧残差按掉线轮数 gap 指数衰减
+      #   R_new = R_old * stale_gamma^(gap-1)。1.0 = 关闭衰减
+      stale_gamma: 0.5
+      # 每轮自然衰减（安全阀，防止未选中 batch 残差无限增长）。1.0 = 关闭
+      decay_gamma: 0.3
+      # 残差范数裁剪阈值（0 = 关闭）
+      clip_tau: 0.0
+
+
+# ============================================================================
+# 五、全局掩码投票配置 (global_mask_vote)
+# ============================================================================
+# 服务器端 mask 聚合策略：客户端只上传 0/1 mask，服务器聚合生成 global_mask
+# 并广播，所有客户端按全局掩码加密上传密文，服务器永远看不到明文梯度。
+# 仅当 ckks.sparsification.strategy != "none" 时生效。
+global_mask_vote:
+  mode: "topk"                       # "none" | "union" | "threshold" | "topk"
+                                     #   none      = 关闭全局投票（客户端独立稀疏化）
+                                     #   union     = 并集
+                                     #   threshold = 阈值（超过 θ% 客户端选中才纳入）
+                                     #   topk      = 按选中次数取前 K 个 batch
+  threshold_pct: 0.5                # threshold 模式阈值
+  topk_count_k: 20                  # topk 模式：取选中次数前 K 的 batch
+                                    #   ⚠️ 建议 ≥ 总 batch 数的 20%，避免覆盖率过低
+  topk_pct: 0.1
+
+
+# ============================================================================
+# 六、带宽模拟配置 (bandwidth)
+# ============================================================================
+# 用于虚拟时钟的通信时间模拟（round time = 传输时间 + 训练时间）。
+bandwidth:
+  base_dl_bw: 1024.0                 # 基础下行带宽 (kbps)：256~512≈3G，1024~2048≈4G/WiFi
+  base_ul_bw: 512.0                  # 基础上行带宽 (kbps)，建议为下行的 0.3~0.5 倍
+  variance: 0.3                      # 带宽变异系数 [0,1)，越大客户端间差异越大
+  distribution: "lognormal"          # "uniform" | "lognormal"（lognormal 更接近真实网络）
+
+  # 低带宽客户端过滤（true = 过滤掉上下行任一带宽低于阈值的客户端）
+  # 注意：需要基础带宽(base_dl_bw)与阈值同量级，否则可能无法采样出足够客户端
+  filter_low_bandwidth: false
+  min_dl_bw_kbps: 5120               # 5 Mbps
+  min_ul_bw_kbps: 5120
+
+  # 最高带宽限制（inf = 不限制）
+  max_dl_bw_kbps: .inf
+  max_ul_bw_kbps: .inf
+
+
+# ============================================================================
+# 七、实验指标配置 (metrics)
+# ============================================================================
+metrics:
+  compute_time: true
+  communication_cost: true
+  ciphertext_size: true
+  expansion_ratio: true
+  accuracy: true
+  loss: true
+  communication_rounds: true
+  dropout_rate: true
+  cpu_utilization: true
+  key_distribution_cost: true
+  memory_usage: true
+
+
+# ============================================================================
+# 八、可视化配置 (visualization)
+# ============================================================================
+visualization:
+  enabled: true
+  save_format: "png"
+  dpi: 300
+  figure_size: [10, 6]
+  style: "seaborn-v0_8-whitegrid"
+
+
+# ============================================================================
+# 九、输出配置 (output)
+# ============================================================================
+output:
+  results_dir: "./results"          # 实验结果（metrics.json, report.md）保存目录
+  model_dir: "./history_models"     # 每轮模型 checkpoint 保存目录
+  viz_dir: "./visualization"        # 可视化图表保存目录
+  save_interval: 999                # 每 N 轮保存一次模型；999 = 仅保存最终模型
