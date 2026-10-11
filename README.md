@@ -98,6 +98,88 @@ python main.py --config path/to/config.yaml
 | 系统攻击 `system:` | random_dropout / persistent_dos / free_riding_zeros / free_riding_previous / free_riding_masked / sybil_collusion |
 | 隐私推断 `privacy:` | dlg / idlg / inverting_gradients / membership_inference |
 
+## 执行流程与代码逻辑
+
+### 启动流程（`main.py` → `CKKSFedExperiment`）
+
+```
+python main.py --config configs/config.yaml
+        │
+        ▼
+CKKSFedExperiment.__init__()
+  ├─ 加载 config.yaml，自动修正 num_classes 与数据集不匹配
+  ├─ _init_components()
+  │   ├─ create_client_dataloaders()   数据集加载 + IID/Dirichlet 划分
+  │   ├─ create_model()                全局模型 (LeNet/MLP/CNN)
+  │   ├─ CKKSManager                   KGC 生成完整上下文（含私钥）
+  │   ├─ server_ckks_manager           服务器：仅公钥上下文，不能解密
+  │   ├─ AggregationServer             密文全局状态初始化
+  │   ├─ FederatedClient × N           每个客户端持完整上下文（可解密）
+  │   ├─ HierarchyController（可选）   hierarchy.enabled=true 时创建边缘层
+  │   ├─ 攻击注入（可选）              attack.enabled=true 时按 name 实例化攻击，
+  │   │                                恶意客户端 = 编号最大的最后 malicious_count 个
+  │   │                                • data:* → 替换恶意客户端 train_loader
+  │   │                                • privacy:* → 只登记，训练中空操作
+  │   └─ BandwidthSimulator            异构带宽采样（虚拟时钟用）
+  └─ run_experiment()                  逐轮调用 run_round_encrypted()
+```
+
+### 单轮加密训练流程（`run_round_encrypted`）
+
+```
+1. 客户端选择     _select_clients()（可插拔策略，默认 random 采样）
+2. 密文下发       server.get_encrypted_global_params() → 客户端
+3. 本地训练       client.local_train()
+                  解密全局模型 → 本地 SGD → 明文更新（差值或全量）
+4. 攻击注入（可选） attack.enabled 时（发生在明文域、加密上传之前）：
+                  • DoS 类：participates(round) 为 False 的恶意客户端
+                    本轮剔除（同步过滤 update/weight/loss/acc 列表）
+                  • model:/system: 调 attack(update, AttackContext) 篡改
+                    恶意客户端更新（合谋攻击可见本轮全部明文更新）
+5. 掩码投票（可选） 客户端本地 TopK 打分只上传 0/1 mask → 服务器/边缘
+                  聚合生成 global_mask 并广播（服务器永远看不到明文梯度）
+6. 加密上传       client.encrypt_update(update, global_mask)
+                  TopK 稀疏化 + slot packing + CKKS 加密 + PTopk 残差补偿
+7. 密文聚合       • 标准：客户端密文 → 服务器加权平均（同态）
+                  • 层次：客户端密文 → 边缘密文聚合 → 云加法合并
+                    （边缘只持公钥；乘法深度方案见 doc/hierarchy.md）
+8. 解密评估       客户端解密全局模型并完成测试集评估后上报
+                  （服务器不持私钥，永远拿不到明文模型/梯度）
+9. 指标记录       准确率/损失/通信量/时间/密文膨胀率 → MetricsCollector
+```
+
+### 关键代码位置
+
+| 功能 | 文件 |
+|------|------|
+| 实验编排 / 单轮流程 | `main.py` (`CKKSFedExperiment`) |
+| 客户端训练 / 加密上传 | `ckks_fed/client.py` (`FederatedClient`) |
+| 密文聚合 / 掩码投票 | `ckks_fed/server.py` (`AggregationServer`) |
+| CKKS 上下文 / 同态运算 | `ckks_fed/crypto.py` (`CKKSManager`) |
+| slot packing / TopK 稀疏化 | `ckks_fed/packing.py` / `ckks_fed/sparsification.py` |
+| 全局掩码投票 | `ckks_fed/global_mask_vote.py` |
+| PTopk 残差补偿 | `ckks_fed/ptopk.py` |
+| 层次架构（云-边-端 / UAV） | `ckks_fed/hierarchy.py` |
+| 攻击接口 / 注册表 | `hfl_attacks/base.py` (`ATTACK_REGISTRY`) |
+| 攻击评估 CLI | `hfl_attacks/runner.py` |
+| 攻击全量生效验证 | `scripts/verify_attacks.py` |
+
+### 验证攻击是否生效
+
+```bash
+# 全部 24 个攻击逐一跑 1 轮端到端（非层次模式，约 10 分钟）
+python scripts/verify_attacks.py
+
+# 只验证初始化注入（秒级）
+python scripts/verify_attacks.py --quick
+
+# 单个攻击的集成测试
+python -m pytest tests/test_attack_integration.py -v
+```
+
+> 本文档随代码演进维护：涉及配置结构、训练流程、攻击/防御机制的重大改动时，
+> 需同步更新本章节与 `doc/` 下对应文档。
+
 ## 配置文件说明
 
 ### configs/config.yaml（唯一主配置）

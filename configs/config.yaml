@@ -186,18 +186,48 @@ hierarchy:
 # ============================================================================
 # enabled=false：不注入任何攻击，就是正常的 CKKS+FedAvg 训练。
 # enabled=true：按 name 从 hfl_attacks 注册表(ATTACK_REGISTRY)选取一种攻击，
-# 恶意客户端为编号最大的最后 malicious_count 个，其客户端特征/更新在训练中被篡改。
-#   name 前缀决定攻击类别：
-#     data:    数据投毒（如 data:backdoor_badnets，替换恶意客户端的训练数据加载器）
-#     model:   模型投毒（如 model:sign_flipping / model:model_replacement，篡改明文更新）
-#     system:  系统攻击（如 system:denial_of_service_*，客户端按轮次参与/发送截断更新）
-#     privacy: 隐私推断（客户端本地利用明文更新重构他人数据，不改变全局模型）
+# 恶意客户端为编号最大的最后 malicious_count 个，其数据/更新在训练中被篡改。
 # 攻击实现见 hfl_attacks/（注册表按 name 实例化）。防御（median/krum 等基于明文的
 # 聚合规则，ckks_fed/defenses/）只在非加密聚合路径生效；当前 CKKS 密文聚合路径下
 # 密文不可解密，防御仅作为明文对照/未来工作。
+#
+# ── 可选攻击清单（取消对应 name 注释即可选用，每类至少 3 种）────────────
+#
+# ▍数据投毒 data:（初始化时替换恶意客户端的训练数据加载器）
+#   data:label_flipping_random      随机标签翻转 (paper: label flipping survey)
+#   data:label_flipping_targeted    定向标签翻转（源类→目标类）
+#   data:backdoor_badnets           BadNets 后门触发器 (Gu et al. 2019)
+#   data:backdoor_blend             Blend 后门 (Chen et al. 2017)
+#   data:backdoor_edgecase          Edge-case 后门 (Wang et al. 2020)
+#
+# ▍模型投毒 model:（每轮在客户端明文域篡改上传更新，加密上传之前）
+#   model:sign_flipping             符号翻转 (Baruch et al. 2019)
+#   model:scaling                   缩放攻击 (Bagdasaryan et al. 2020)
+#   model:gaussian_noise            高斯噪声更新
+#   model:backdoor_model            后门模型注入
+#   model:constant                  常数/零更新
+#   model:mimic_alie                ALIE 近似（简版）
+#   model:alie                      少量即有效 (ALIE, Baruch et al. 2019)
+#   model:min_max                   Min-Max 距离规避 (Shejwalkar et al. 2021)
+#   model:min_sum                   Min-Sum 距离规避 (Shejwalkar et al. 2021)
+#
+# ▍系统攻击 system:（篡改更新 + 可选控制客户端是否参与本轮）
+#   system:random_dropout           随机掉线 (DoS)
+#   system:persistent_dos           持续性拒绝服务
+#   system:free_riding_zeros        搭便车：全零更新
+#   system:free_riding_previous     搭便车：上一轮更新
+#   system:free_riding_masked       搭便车：掩码伪装
+#   system:sybil_collusion          女巫合谋 (Douceur 2002)
+#
+# ▍隐私推断 privacy:（不修改训练过程；指标用 python -m hfl_attacks.runner 单独评估）
+#   privacy:dlg                     深度梯度泄漏 (DLG, Zhu et al. 2019)
+#   privacy:idlg                    改进 DLG (iDLG, Zhao et al. 2020)
+#   privacy:inverting_gradients     梯度反演 (Geiping et al. 2020)
+#   privacy:membership_inference    成员推断 (Shokri et al. 2017)
+#
 attack:
   enabled: false                  # true=开启攻击实验；false=正常 FedAvg
-  name: "model:sign_flipping"     # ATTACK_REGISTRY 注册名（4 类前缀 data:/model:/system:/privacy:）
+  name: "model:sign_flipping"     # 从上方清单中选一个注册名填入
   malicious_count: 2              # 恶意客户端数（取编号最大的最后 N 个）
 
 
