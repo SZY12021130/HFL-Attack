@@ -237,13 +237,18 @@ class CKKSFedExperiment:
         # 密钥架构：密钥生成中心(KGC)生成完整上下文（含私钥）——模拟环境中由实验编排方担任
         # • 客户端：持有完整上下文（含私钥），可解密全局模型
         # • 服务器：仅持有公钥上下文，只能加密/同态聚合，不能解密任何密文
-        self.ckks_manager = CKKSManager(self.config['ckks'].copy())
+        # 标记 PPBR 轨道：CKKS 管理器在 PPBR 模式下仅作组件占位（不上传/
+        # 不稀疏化），跳过 PTopk 残差包装，打印按 PPBR 语义
+        _ckks_cfg = self.config['ckks'].copy()
+        _ckks_cfg['_ppbr_track'] = bool(
+            self.config.get('ppbr', {}).get('enabled', False))
+        self.ckks_manager = CKKSManager(_ckks_cfg)
         from ckks_fed.crypto import CKKSContext
         poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
         server_context = CKKSContext.from_full_bytes(
             self.ckks_manager.context.get_context_bytes(),
             poly_modulus_degree=poly_degree)
-        self.server_ckks_manager = CKKSManager(self.config['ckks'].copy(), context=server_context)
+        self.server_ckks_manager = CKKSManager(_ckks_cfg.copy(), context=server_context)
         ckks = self.config['ckks']
         tree([
             ("🔐", f"CKKS  N={ckks.get('poly_modulus_degree')}  |  "
@@ -273,7 +278,7 @@ class CKKSFedExperiment:
             context = CKKSContext.from_full_bytes(
                 self.ckks_manager.context.get_full_context_bytes(),
                 poly_modulus_degree=poly_degree)
-            client.ckks_manager = CKKSManager(self.config['ckks'].copy(), context=context)
+            client.ckks_manager = CKKSManager(_ckks_cfg.copy(), context=context)
             self.clients.append(client)
         tree([
             ("👤", f"Created {len(self.clients)} clients  |  "

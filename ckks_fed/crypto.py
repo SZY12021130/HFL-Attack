@@ -399,7 +399,11 @@ class CKKSManager:
         self.batch_size = slot_count
         # PTopk: 初始化残差累积模块，并在启用时包装稀疏化策略
         self.ptopk = PTopkModule(config)
-        if self.ptopk.client_residual_enabled and not isinstance(self.sparsification_strategy, NoSparsification):
+        if config.get('_ppbr_track', False):
+            # PPBR 轨道：整条路线走 PPBR 协议（动量 + SA 掩码 + PLHE），
+            # 无 TopK 稀疏化/残差补偿，仅作组件占位不包装
+            logger.info("PPBR 轨道：跳过 PTopk 残差包装（协议用客户端动量，无 TopK）")
+        elif self.ptopk.client_residual_enabled and not isinstance(self.sparsification_strategy, NoSparsification):
             self.sparsification_strategy = self.ptopk.wrap_strategy(self.sparsification_strategy)
             logger.info(f"PTopk client_residual 已启用: 包装策略={self.sparsification_strategy.name}")
         elif self.ptopk.client_residual_enabled:
