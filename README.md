@@ -193,23 +193,27 @@ CKKSFedExperiment.__init__()
 #### PPBR 一轮完整实体时序（云 / 边缘 / 客户端）
 
 ```mermaid
+%%{init: {'themeVariables': {'fontSize': '16px', 'actorFontSize': '16px', 'messageFontSize': '16px', 'noteFontSize': '16px'}}}%%
 sequenceDiagram
     autonumber
     participant C as 云 A
     participant E as 边缘 A_i
     participant U as 客户端 uᵢ,ⱼ
 
-    C->>U: (0) 广播全局模型 wₐ、坐标子集 G、云公钥、CLDP 参数
-    U->>E: (1) 本地训练 Δ；符号元组 + CLDP 扰动（3 维带噪元组）
+    C->>U: (0) 广播 wₐ、坐标子集 G、云公钥、CLDP 参数
+    U->>E: (1) 本地训练 Δ；符号元组 + CLDP 扰动
+    Note over E: 边缘只见 3 维带噪元组
     Note over E: (2) trimmed k-means 过滤，得可信集 Uᵢ⁽ᵀ⁾
-    U->>E: (3) m′ = m − x；x 的云公钥密文；SA 掩码 z（仅可信客户端参与重传输）
-    Note over U,E: SA 为真实 X25519+HKDF 协商 + Shamir 份额（doc/ppbr.md §3.2）
-    Note over E: (4) SA 求和掩码相消得边缘均值 m′ᵢ；同态求和得 xᵢ 密文
+    U->>E: (3) m′ = m − x；x 的云公钥密文；SA 掩码 z
+    Note over U,E: 仅可信客户端参与重传输
+    Note over U,E: SA 为真实 X25519+HKDF + Shamir（doc/ppbr.md §3.2）
+    Note over E: (4) SA 求和掩码相消得 m′ᵢ；同态求和得 xᵢ 密文
     E->>C: (5) xᵢ 密文、2m′ᵢ 的边缘密文（云解不开）
-    Note over C: (6) 解密 xᵢ；取随机 rᵢ 算盲化乘积密文 v = (2m′ᵢ)∘(rᵢ·xᵢ)
+    Note over C: (6) 解密 xᵢ；取随机 rᵢ 算盲化乘积 v = (2m′ᵢ)∘(rᵢ·xᵢ)
     C->>E: v 的边缘密文（云只见盲化点积）
     E->>C: (7) Sᵢ = 2rᵢ(m′ᵢ·xᵢ)、‖m′ᵢ‖²
-    Note over C: (8) ‖mᵢ‖² = ‖m′‖²+‖x‖²+Sᵢ/rᵢ；M = 中位数；范数带 + l′ 筛出 A⁽ᵀ⁾；x″ᵢ = min(1, M/‖mᵢ‖)
+    Note over C: (8) ‖mᵢ‖² = ‖m′‖²+‖x‖²+Sᵢ/rᵢ；M = 中位数
+    Note over C: 范数带 + l′ 筛出 A⁽ᵀ⁾；x″ᵢ = min(1, M/‖mᵢ‖)
     C->>E: (9) tᵢ = R·x″ᵢ（边缘看是随机数）
     E->>C: (10) uᵢ = tᵢ·m′ᵢ + 边缘级 SA 掩码
     Note over C: (11) 掩码相消、除回 R；去噪得全局更新 mₐ
