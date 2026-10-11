@@ -197,24 +197,42 @@ sequenceDiagram
     autonumber
     participant C as 云 A
     participant E as 边缘 A_i
-    participant U as 客户端 u_{i,j}
+    participant U as 客户端 uᵢ,ⱼ
 
-    C->>U: (0) 广播 w_a、坐标子集 G、pk_A、CLDP 参数
+    C->>U: (0) 广播全局模型 wₐ、坐标子集 G、云公钥、CLDP 参数
     U->>E: (1) 本地训练 Δ；符号元组 + CLDP 扰动（3 维带噪元组）
-    Note over E: (2) trimmed k-means 过滤，得可信集 U_i^(T)
-    U->>E: (3) m' = m − x；[x]_A（云公钥）；SA 掩码 z（仅可信客户端参与重传输）
+    Note over E: (2) trimmed k-means 过滤，得可信集 Uᵢ⁽ᵀ⁾
+    U->>E: (3) m′ = m − x；x 的云公钥密文；SA 掩码 z（仅可信客户端参与重传输）
     Note over U,E: SA 为真实 X25519+HKDF 协商 + Shamir 份额（doc/ppbr.md §3.2）
-    Note over E: (4) SA 求和掩码相消得 m'_i；同态求和 [x_i]_A = Σ[x_{i,j}]_A
-    E->>C: (5) [x_i]_A、[2m'_i]_{Ei}（边缘公钥加密，云解不开）
-    Note over C: (6) 解密 x_i；取随机 r_i 算盲化乘积密文 [v]_{Ei} = [2m'_i]∘(r_i·x_i)
-    C->>E: [v]_{Ei}（云只见盲化点积）
-    E->>C: (7) S_i = 2r_i(m'_i·x_i)、‖m'_i‖²
-    Note over C: (8) ‖m_i‖² = ‖m'‖²+‖x‖²+S_i/r_i；M = median；[M−θ, M+θ] 带 + l' 筛出 A^(T)；x''_i = min(1, M/‖m_i‖)
-    C->>E: (9) t_i = R·x''_i（边缘看是随机数）
-    E->>C: (10) u_i = t_i·m'_i + 边缘级 SA 掩码
-    Note over C: (11) 掩码相消、除回 R；denoise + Σx''_i·x_i / l' = m_a
-    C->>U: (12) w_a ← w_a + ζ·m_a；回到 (0) 广播
+    Note over E: (4) SA 求和掩码相消得边缘均值 m′ᵢ；同态求和得 xᵢ 密文
+    E->>C: (5) xᵢ 密文、2m′ᵢ 的边缘密文（云解不开）
+    Note over C: (6) 解密 xᵢ；取随机 rᵢ 算盲化乘积密文 v = (2m′ᵢ)∘(rᵢ·xᵢ)
+    C->>E: v 的边缘密文（云只见盲化点积）
+    E->>C: (7) Sᵢ = 2rᵢ(m′ᵢ·xᵢ)、‖m′ᵢ‖²
+    Note over C: (8) ‖mᵢ‖² = ‖m′‖²+‖x‖²+Sᵢ/rᵢ；M = 中位数；范数带 + l′ 筛出 A⁽ᵀ⁾；x″ᵢ = min(1, M/‖mᵢ‖)
+    C->>E: (9) tᵢ = R·x″ᵢ（边缘看是随机数）
+    E->>C: (10) uᵢ = tᵢ·m′ᵢ + 边缘级 SA 掩码
+    Note over C: (11) 掩码相消、除回 R；去噪得全局更新 mₐ
+    C->>U: (12) wₐ ← wₐ + ζ·mₐ；回到 (0) 广播
 ```
+
+图中公式用 Unicode 数学文本（mermaid 图内不支持 LaTeX 渲染）；精确公式对照如下
+（GitHub 在正文中原生渲染 `$...$`）：
+
+| 图中记号 | 公式 | 含义 |
+|----------|------|------|
+| wₐ | $w_a$ | 全局模型（明文，任何客户端可得） |
+| m′、x | $m' = m - x,\quad x = \eta \lVert m \rVert \frac{u}{\lVert u \rVert}$ | 客户端相对噪声掩码（η = `noise_rel`） |
+| x 的云公钥密文 | $[x]_A = \mathrm{Enc}_{pk_A}(x)$ | 云公钥加密的分块 CKKS 密文 |
+| SA 掩码 z | $z_j = m'_j + \sum_{j'>j}\mathrm{PRG}(s_{j,j'}) - \sum_{j'<j}\mathrm{PRG}(s_{j',j}) + \mathrm{PRG}(b_j)$ | 成对掩码在 $\sum_j z_j$ 上相消（Bonawitz'17） |
+| m′ᵢ | $m'_i = \frac{1}{n'_i}\sum_j m'_{i,j}$ | 边缘聚合均值（边缘只见此值） |
+| 2m′ᵢ 的边缘密文 | $[2m'_i]_{E_i} = \mathrm{Enc}_{pk_{E_i}}(2m'_i)$ | 边缘公钥加密，云解不开 |
+| Sᵢ | $S_i = 2r_i\,(m'_i \cdot x_i)$ | 盲化点积（rᵢ 为云取的随机标量） |
+| ‖mᵢ‖ | $\lVert m_i \rVert^2 = \lVert m' \rVert^2 + \lVert x \rVert^2 + S_i / r_i$ | 范数盲化（云只知范数） |
+| x″ᵢ | $x''_i = \min\!\big(1,\; M / \lVert m_i \rVert\big)$ | 裁剪系数（M 为范数中位数） |
+| tᵢ、uᵢ | $t_i = R\,x''_i,\quad u_i = t_i\,m'_i + \text{边缘级 SA 掩码}$ | 盲化裁剪聚合（R 为云随机数） |
+| mₐ | $m_a = \frac{1}{l'}\Big(\sum_{i \in A^{(T)}} x''_i\,m'_i + \sum_{i \in A^{(T)}} x''_i\,x_i\Big)$ | 除回 R、去噪后的全局更新 |
+| wₐ 更新 | $w_a \leftarrow w_a + \zeta\, m_a$ | 对应论文 $w \leftarrow w - \zeta m$（Δ 为变化量方向） |
 
 要点：客户端筛选（步骤 1-2）发生在重密文传输（步骤 3）**之前**，边缘筛选
 （步骤 6-9）发生在边缘转发（步骤 5）**之后**——云筛选边缘所依据的范数本就
