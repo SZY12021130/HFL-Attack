@@ -128,6 +128,17 @@ class PPBRController:
     def cloud_filter_edges(self, edge_means: Dict[int, Dict[str, torch.Tensor]]
                            ) -> Tuple[Set[int], Dict[int, float], float]:
         """
+        云侧（明文入口，测试/基线用）：由边缘均值计算范数后筛选。
+
+        PPBR 协议轨道请用 cloud_filter_norms（范数由两轮点积协议盲化得出，
+        云不接触边缘模型明文）。
+        """
+        norms = {e: self._l2_norm(m) for e, m in edge_means.items()}
+        return self.cloud_filter_norms(norms)
+
+    def cloud_filter_norms(self, norms: Dict[int, float]
+                           ) -> Tuple[Set[int], Dict[int, float], float]:
+        """
         云侧：范数中位数筛选 + 裁剪（云唯一可见信息是各边缘范数）。
 
         Returns:
@@ -135,9 +146,8 @@ class PPBRController:
             clip:          {edge_id: x''_i}，x''_i = min(1, M/‖m_i‖₂)
             M:             范数中位数
         """
-        if not edge_means:
+        if not norms:
             return set(), {}, 0.0
-        norms = {e: self._l2_norm(m) for e, m in edge_means.items()}
         M = float(np.median(list(norms.values())))
 
         # l'：已知 β → (1−β)l；未知 → 0.5l（论文关键性质：无需先知拜占庭比例）

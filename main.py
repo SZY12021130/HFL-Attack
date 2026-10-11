@@ -3,6 +3,12 @@ CKKS-Fed 联邦学习主程序
 协调多客户端、聚合服务器和辅助节点
 """
 
+import os
+
+# MKL(numpy/torch) 与 TenSEAL 各捆绑一份 libiomp5md.dll，后初始化的一份会
+# 触发 OMP Error #15 直接 abort 进程。必须在任何 OpenMP 运行库加载前设置。
+os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -18,7 +24,8 @@ import psutil
 
 # 导入自定义模块
 from ckks_fed.models import create_model, print_model_summary
-from ckks_fed.data import create_client_dataloaders, evaluate, get_dataset_num_classes
+from ckks_fed.data import (create_client_dataloaders, evaluate,
+                           get_dataset_num_classes, get_model_params)
 from ckks_fed.client import FederatedClient
 from ckks_fed.server import AggregationServer
 from ckks_fed.crypto import CKKSManager
@@ -280,6 +287,8 @@ class CKKSFedExperiment:
 
         # PPBR（可插拔拜占庭鲁棒，He 等 IEEE TMC 2026）：开启后自动启用层次架构
         # （云-边-端是 PPBR 的前提），无需手动设置 hierarchy.enabled。
+        # 双轨架构：开启后整条加解密路线走 PPBR 协议（云持 sk_A、边缘各自持
+        # 私钥、SA 掩码聚合、CLDP、范数盲化裁剪），不走全局投票/TopK/单密钥 CKKS。
         self.ppbr = None
         ppbr_cfg = self.config.get('ppbr') or {}
         if ppbr_cfg.get('enabled', False):
@@ -287,8 +296,8 @@ class CKKSFedExperiment:
                 self.config['hierarchy']['enabled'] = True
                 tag_warn(LogTag.ATTACK,
                          "ppbr.enabled=true → 自动开启 hierarchy（云-边-端架构）")
-            from ppbr import PPBRController
-            self.ppbr = PPBRController(
+            from ppbr import PPBRProtocol
+            self.ppbr = PPBRProtocol(
                 self.config,
                 num_edges=int(self.config['hierarchy'].get('num_edges', 3)),
                 seed=self.config['system'].get('random_seed', 42))
@@ -420,90 +429,10 @@ class CKKSFedExperiment:
         # （攻击发生在客户端本地、加密上传之前——即"客户端被攻破/恶意客户端"威胁模型；
         #   数据投毒已在初始化时替换 train_loader，此处无需处理；
         #   隐私推断不修改更新，见初始化时的提示。）
-        if self.attack_inst is not None and self.malicious_ids:
-            if hasattr(self.attack_inst, 'participates'):
-                keep = [(c.client_id not in self.malicious_ids)
-                        or self.attack_inst.participates(round_num)
-                        for c in selected_clients]
-                if not all(keep):
-                    dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
-                    tag_info(LogTag.ATTACK, f"round {round_num + 1}: DoS 掉线 {dropped}")
-                    selected_clients = [c for c, k in zip(selected_clients, keep) if k]
-                    client_updates = [u for u, k in zip(client_updates, keep) if k]
-                    client_weights = [w for w, k in zip(client_weights, keep) if k]
-                    train_losses = [l for l, k in zip(train_losses, keep) if k]
-                    train_accs = [a for a, k in zip(train_accs, keep) if k]
-            from hfl_attacks import ClientUpdateAttack
-            if isinstance(self.attack_inst, ClientUpdateAttack) and client_updates:
-                from hfl_attacks import AttackContext
-                mal_pos = [i for i, c in enumerate(selected_clients)
-                           if c.client_id in self.malicious_ids]
-                for i in mal_pos:
-                    ctx = AttackContext(
-                        self_update=client_updates[i],
-                        all_updates=client_updates,
-                        self_index=i,
-                        malicious_indices=mal_pos,
-                        num_classes=self.config['data']['num_classes'],
-                        round_num=round_num)
-                    client_updates[i] = self.attack_inst.attack(client_updates[i], ctx)
-
-        # ==== PPBR（算法2 CC + 算法3 EA + 算法4 EF + 算法5 GA）：拜占庭鲁棒过滤 ====
-        # 攻击之后、加密上传之前调用；恶意更新先被 PPBR 过滤/裁剪再进入密文聚合。
-        # 信息流：边缘只见到 CLDP 扰动的 3 维符号元组，云只见到边缘范数。
-        if self.ppbr is not None and client_updates:
-            groups = self.hierarchy.group_clients(
-                [c.client_id for c in selected_clients], round_num)
-            # 算法 2 a/b：客户端符号统计 + CLDP 扰动
-            total_params = sum(v.numel() for v in client_updates[0].values())
-            coord_idx = self.ppbr.select_coordinates(total_params, round_num)
-            tuples = {}
-            for c, u in zip(selected_clients, client_updates):
-                tuples[c.client_id] = self.ppbr.perturb(
-                    self.ppbr.client_sign_tuple(u, coord_idx))
-            # 算法 2 c：边缘 trimmed k-means 过滤可信客户端
-            trusted = self.ppbr.filter_clients(tuples, groups)
-            keep = [c.client_id in trusted for c in selected_clients]
-            if not all(keep):
-                dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
-                tag_info(LogTag.ATTACK, f"round {round_num + 1}: PPBR 边缘过滤 {dropped}")
-                selected_clients = [c for c, k in zip(selected_clients, keep) if k]
-                client_updates = [u for u, k in zip(client_updates, keep) if k]
-                client_weights = [w for w, k in zip(client_weights, keep) if k]
-                train_losses = [l for l, k in zip(train_losses, keep) if k]
-                train_accs = [a for a, k in zip(train_accs, keep) if k]
-            # 算法 3：客户端动量 m ← φ·m + (1−φ)·Δ，上传动量而非原始更新
-            self.ppbr.update_momenta([c.client_id for c in selected_clients], client_updates)
-            client_updates = [self.ppbr.momentum_of(c.client_id) for c in selected_clients]
-            # 算法 4/5：云范数中位数筛选恶意边缘 + 裁剪系数 x''_i
-            alive = {c.client_id for c in selected_clients}
-            edge_means = self.ppbr.edge_means(groups, alive)
-            trusted_edges, clip, M = self.ppbr.cloud_filter_edges(edge_means)
-            st = self.ppbr.last_stats.get('edges', {})
-            tag_info(LogTag.ATTACK,
-                     f"round {round_num + 1}: PPBR 云筛选 edges={sorted(st.get('trusted', []))} "
-                     f"M={st.get('M', 0):.4f} clip={ {e: round(x, 3) for e, x in st.get('clip', {}).items()} }")
-            assign_map = self.hierarchy.assigner.assign(round_num)
-            keep = [assign_map.get(c.client_id) in trusted_edges for c in selected_clients]
-            if not any(keep):
-                # 极端情况：全部被筛掉则 fail-open——保留客户端但权重置 0
-                # （零权重密文对聚合无贡献），全局模型本轮不更新
-                tag_warn(LogTag.ATTACK,
-                         f"round {round_num + 1}: PPBR 筛空，本轮 fail-open（权重置 0 不更新）")
-                clip = {}
-            elif not all(keep):
-                dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
-                tag_info(LogTag.ATTACK,
-                         f"round {round_num + 1}: PPBR 云筛选剔除 {dropped}")
-                selected_clients = [c for c, k in zip(selected_clients, keep) if k]
-                client_updates = [u for u, k in zip(client_updates, keep) if k]
-                client_weights = [w for w, k in zip(client_weights, keep) if k]
-                train_losses = [l for l, k in zip(train_losses, keep) if k]
-                train_accs = [a for a, k in zip(train_accs, keep) if k]
-            # 算法 5：裁剪系数 x''_i 与全局步长 ζ 折入上传权重（w_i·x''_i·ζ）
-            client_weights = [
-                w * self.ppbr.scale_of(assign_map.get(c.client_id), clip)
-                for c, w in zip(selected_clients, client_weights)]
+        selected_clients, client_updates, client_weights, train_losses, train_accs = \
+            self._apply_attacks_to_updates(
+                round_num, selected_clients, client_updates,
+                client_weights, train_losses, train_accs)
 
         # ==== 全局掩码投票（隐私安全：客户端本地算 mask，只上传 mask）====
         gmv_mode = self.config.get('global_mask_vote', {}).get('mode', 'none')
@@ -650,6 +579,138 @@ class CKKSFedExperiment:
             'simulated_round_duration': simulated_round_duration,
         }
 
+    def _apply_attacks_to_updates(self, round_num, selected_clients,
+                                  client_updates, *other_lists):
+        """
+        DoS 类掉线剔除 + 明文域更新篡改（攻击发生在客户端本地、加密上传之前，
+        即"客户端被攻破/恶意客户端"威胁模型）。与轨道无关，CKKS/PPBR 两轨共用。
+
+        Returns:
+            (selected_clients, client_updates, *other_lists) 过滤后的平行列表
+        """
+        if self.attack_inst is None or not self.malicious_ids:
+            return (selected_clients, client_updates) + other_lists
+        lists = other_lists
+        if hasattr(self.attack_inst, 'participates'):
+            keep = [(c.client_id not in self.malicious_ids)
+                    or self.attack_inst.participates(round_num)
+                    for c in selected_clients]
+            if not all(keep):
+                dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
+                tag_info(LogTag.ATTACK, f"round {round_num + 1}: DoS 掉线 {dropped}")
+                selected_clients = [c for c, k in zip(selected_clients, keep) if k]
+                client_updates = [u for u, k in zip(client_updates, keep) if k]
+                lists = tuple([[v for v, k in zip(lst, keep) if k]
+                               for lst in lists])
+        from hfl_attacks import ClientUpdateAttack
+        if isinstance(self.attack_inst, ClientUpdateAttack) and client_updates:
+            from hfl_attacks import AttackContext
+            mal_pos = [i for i, c in enumerate(selected_clients)
+                       if c.client_id in self.malicious_ids]
+            for i in mal_pos:
+                ctx = AttackContext(
+                    self_update=client_updates[i],
+                    all_updates=client_updates,
+                    self_index=i,
+                    malicious_indices=mal_pos,
+                    num_classes=self.config['data']['num_classes'],
+                    round_num=round_num)
+                client_updates[i] = self.attack_inst.attack(client_updates[i], ctx)
+        return (selected_clients, client_updates) + tuple(lists)
+
+    def run_round_ppbr(self, round_num: int) -> Dict:
+        """
+        运行一轮 PPBR 协议（He 等 IEEE TMC 2026 完整密文路线，双轨架构的 PPBR 轨道）
+
+        流程：云明文广播 w_a（论文设定：全局模型公开）→ 客户端本地训练
+              → 攻击注入（与 CKKS 轨道同一威胁模型）→ 算法 2 符号过滤
+              → 客户端噪声掩码 + [x]_A + SA 掩码上传 → 边缘 SA 聚合 + [2m']_{Ei}
+              → 云两轮点积范数盲化 → 范数中位数筛选 + 盲化裁剪聚合 → denoise 得 m_a
+              → 云更新 w_a ← w_a − ζ·m_a → 明文评估
+
+        信任模型与 CKKS 轨道不同（见 doc/ppbr.md）：云持 sk_A（论文原样），
+        每个边缘自持 sk_{Ei}，客户端不持任何服务器密钥；不走全局掩码投票、
+        TopK 稀疏化与单密钥 CKKS 密文聚合。
+        """
+        log_round_header(round_num + 1, self.config['system']['num_rounds'],
+                         mode="PPBR")
+        round_start = time.time()
+
+        selected_clients = self._select_clients()
+
+        # 云明文广播全局模型（论文设定：w_a 公开，任何客户端可得）
+        global_params = get_model_params(self.server.model)
+        client_updates, train_losses, train_accs = [], [], []
+        for client in selected_clients:
+            update, loss, acc = client.local_train(
+                global_params=global_params, round_num=round_num)
+            client_updates.append(update)
+            train_losses.append(loss)
+            train_accs.append(acc)
+            self.metrics.record('local_train_time', client.local_train_time)
+
+        # 攻击注入（与 CKKS 轨道相同语义：客户端本地、加密上传之前）
+        client_weights = [1.0] * len(selected_clients)
+        selected_clients, client_updates, _, train_losses, train_accs = \
+            self._apply_attacks_to_updates(
+                round_num, selected_clients, client_updates,
+                client_weights, train_losses, train_accs)
+
+        # ==== PPBR 完整协议（算法 2/3/4/5，见 ppbr/protocol.py 时序注释）====
+        updates_by_cid = {c.client_id: u for c, u in
+                          zip(selected_clients, client_updates)}
+        m_a = {k: torch.zeros_like(v)
+               for k, v in get_model_params(self.server.model).items()}
+        if updates_by_cid:
+            groups = self.hierarchy.group_clients(
+                [c.client_id for c in selected_clients], round_num)
+            m_a = self.ppbr.run_round(round_num, updates_by_cid, groups,
+                                      num_edges=self.hierarchy.num_edges)
+            st = self.ppbr.last_stats.get('edges', {})
+            tag_info(LogTag.ATTACK,
+                     f"round {round_num + 1}: PPBR 云筛选 "
+                     f"edges={sorted(st.get('trusted', []))} "
+                     f"M={st.get('M', 0):.4f} "
+                     f"clip={ {e: round(x, 3) for e, x in st.get('clip', {}).items()} }")
+
+        # 云更新全局模型：w_a ← w_a − ζ·m_a（算法 5 第 5 行）
+        zeta = self.ppbr.cfg.global_zeta
+        with torch.no_grad():
+            for name, p in self.server.model.named_parameters():
+                p.add_(m_a[name].to(p.device), alpha=-zeta)
+
+        # 评估：论文设定 w_a 公开，直接对明文全局模型评估
+        criterion = nn.CrossEntropyLoss()
+        test_loss, test_acc = evaluate(
+            self.server.model, self.test_loader, criterion, self.device)
+        self.server.record_evaluation(test_loss, test_acc)
+
+        self.metrics.record('train_loss',
+                            float(np.mean(train_losses)) if train_losses else 0.0)
+        self.metrics.record('train_acc',
+                            float(np.mean(train_accs)) if train_accs else 0.0)
+        self.metrics.record('test_loss', test_loss)
+        self.metrics.record('test_acc', test_acc)
+        self.metrics.record('communication_rounds', 1)
+        self.metrics.record('cpu_utilization', psutil.cpu_percent())
+        self.metrics.record('memory_usage', psutil.virtual_memory().percent)
+
+        round_time = time.time() - round_start
+        self.metrics.record('total_round_time', round_time)
+        self.metrics.record('total_round_time_simulated', 0.0)
+
+        tag_info(LogTag.ROUND,
+                 f"#{round_num + 1} done  |  acc={test_acc:.2f}%  |  "
+                 f"real_time={round_time:.2f}s  |  mode=PPBR")
+
+        return {
+            'round': round_num + 1,
+            'test_acc': test_acc,
+            'test_loss': test_loss,
+            'round_time': round_time,
+            'simulated_round_duration': 0.0,
+        }
+
     def run_experiment(self) -> Dict:
         """
         运行完整加密实验
@@ -660,13 +721,16 @@ class CKKSFedExperiment:
         upload_mode = "Δ" if self.config['system'].get('upload_difference', True) else "Full"
         blank_line()
         banner("Experiment Start", width=72)
-        kv("Mode", "Encrypted", indent=1)
+        kv("Mode", "PPBR" if self.ppbr is not None else "Encrypted", indent=1)
         kv("Rounds", self.config['system']['num_rounds'], indent=1)
         kv("Upload", upload_mode, indent=1)
         separator(width=72)
 
         num_rounds = self.config['system']['num_rounds']
         results = []
+        # 双轨分发：ppbr.enabled → PPBR 协议轨道；否则 CKKS 加密轨道
+        round_fn = (self.run_round_ppbr if self.ppbr is not None
+                    else self.run_round_encrypted)
 
         key_dist_time = 0.0
         self.metrics.record('key_distribution_time', key_dist_time)
@@ -677,7 +741,7 @@ class CKKSFedExperiment:
 
         try:
             for round_num in range(num_rounds):
-                result = self.run_round_encrypted(round_num)
+                result = round_fn(round_num)
                 results.append(result)
 
                 # 每N轮保存一次模型
@@ -739,7 +803,10 @@ class CKKSFedExperiment:
 
         m = self.metrics.get_metrics()
         is_encrypted = len(m.get('ciphertext_size', [])) > 0
-        mode = "encrypted" if is_encrypted else "plain"
+        if getattr(self, 'ppbr', None) is not None:
+            mode = "ppbr"
+        else:
+            mode = "encrypted" if is_encrypted else "plain"
 
         entry = {
             "timestamp": self.timestamp,

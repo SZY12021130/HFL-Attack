@@ -1,6 +1,6 @@
 """
-PPBR 测试（He 等 IEEE TMC 2026 的算法 2/3/4/5）
-================================================
+PPBR 测试（He 等 IEEE TMC 2026 的算法 2/3/4/5，双轨架构）
+==========================================================
 
 运行方式：
     python -m pytest tests/test_ppbr.py -v
@@ -9,8 +9,11 @@ PPBR 测试（He 等 IEEE TMC 2026 的算法 2/3/4/5）
   1. CLDP 扰动：支撑有界（‖y−s‖_∞ ≤ L'）且近似无偏（Theorem 2）；
   2. trimmed k-means：良性元组聚成大簇、恶意离群元组被剔除出可信集；
   3. 云范数中位数筛选：中位数 M、按 l' 剔除偏离边缘、裁剪系数 x''=min(1,M/‖m‖)；
-  4. 端到端：ppbr.enabled 自动开启 hierarchy，2 轮加密训练跑通且指标正常；
-  5. 端到端：PPBR + 攻击组合跑通，过滤统计留痕。
+  4. 端到端：ppbr.enabled 自动开启 hierarchy，2 轮完整 PPBR 协议跑通且指标正常；
+  5. 端到端：PPBR 协议 + 攻击组合跑通，过滤统计与线上密文审计留痕。
+
+传输层加密原语（分块加解密 / SA 掩码 / 两轮范数协议 / 协议-明文一致性）
+见 tests/test_ppbr_crypto.py。
 """
 
 import numpy as np
@@ -150,7 +153,8 @@ def _write_cfg(tmp_path, ppbr=True, attack=None):
 
 @pytest.mark.slow
 def test_ppbr_auto_enables_hierarchy_end_to_end(tmp_path):
-    """ppbr.enabled=true 且 hierarchy.enabled=false → 自动开启层次架构并跑通"""
+    """ppbr.enabled=true 且 hierarchy.enabled=false → 自动开启层次架构，
+    完整 PPBR 协议（SA 掩码 + PLHE 密文 + 盲化范数）跑通"""
     from main import CKKSFedExperiment
     exp = CKKSFedExperiment(_write_cfg(tmp_path), output_dir=str(tmp_path))
     assert exp.ppbr is not None
@@ -158,13 +162,15 @@ def test_ppbr_auto_enables_hierarchy_end_to_end(tmp_path):
     exp.run_experiment()
     acc = exp.metrics.get_metrics().get('test_acc', [])
     assert len(acc) == 2 and all(0.0 <= a <= 100.0 for a in acc)
-    # PPBR 过滤统计留痕
+    # PPBR 过滤统计与线上密文审计留痕
     assert 'clients' in exp.ppbr.last_stats and 'edges' in exp.ppbr.last_stats
+    assert exp.ppbr.last_wire.get('client_x_blocks', 0) > 0
+    assert exp.ppbr.last_wire.get('edge_2mp_blocks', 0) > 0
 
 
 @pytest.mark.slow
 def test_ppbr_with_attack_end_to_end(tmp_path):
-    """PPBR + 模型投毒组合：训练跑通且动量/筛选状态正常"""
+    """PPBR 完整协议 + 模型投毒组合：训练跑通且动量/筛选状态正常"""
     from main import CKKSFedExperiment
     exp = CKKSFedExperiment(_write_cfg(tmp_path, attack='model:sign_flipping'),
                             output_dir=str(tmp_path))

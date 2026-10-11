@@ -18,6 +18,12 @@ class PPBRConfig:
     L_prime: float = 7.0
     # 符号统计：云端每轮广播的坐标子集大小 ι
     num_coords: int = 100
+    # 客户端噪声掩码：x = noise_rel·‖m‖·u/‖u‖（u~N(0,I)），与动量同尺度。
+    # m' = m − x 由云最终 denoise 精确抵消；相对噪声既保证掩码效果，
+    # 又避免 ‖m‖² 展开式（‖m'‖²+‖x‖²+2m'·x）中噪声项碾压信号项的
+    # 灾难性抵消——固定大方差噪声会让三项 ~‖x‖² 互相抵消为 ~‖m‖²，
+    # CKKS 误差直接淹没范数真值
+    noise_rel: float = 0.5
     # trimmed k-means：簇数 k、取前 b 个大簇、每轮迭代剔除比例（论文 k=2, b=1）
     k: int = 2
     b: int = 1

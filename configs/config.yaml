@@ -245,7 +245,9 @@ attack:
 #   算法5(GA) 裁剪系数 x''_i=min(1, M/‖m_i‖₂)，全局更新 w ← w − ζ·Σ x''_i·w_i·m_i。
 # 与 attack 段配合即可做"攻击 × PPBR 防御"实验。
 ppbr:
-  enabled: false                  # true=开启 PPBR（自动开启 hierarchy）
+  enabled: false                  # true=开启 PPBR 完整协议（自动开启 hierarchy；
+                                  # 双轨架构：整条加解密路线切换为论文协议，
+                                  # 不走全局投票/TopK/单密钥 CKKS 聚合，见 doc/ppbr.md）
   epsilon_chi: 3.0                # CLDP 隐私预算 ε_χ（论文 ε_χ≥3 时 >80% 良性被选中）
   L: 6.0                          # CLDP 球内半径阈值（论文默认 6）
   L_prime: 7.0                    # CLDP 立方支撑半径（论文默认 7）
@@ -255,6 +257,9 @@ ppbr:
   trim_ratio: 0.3                 # trimmed k-means 每轮剔除比例
   momentum_phi: 0.9               # 客户端动量系数 φ（论文默认 0.9）
   global_zeta: 10.0               # 全局步长 ζ=1/(1−φ)，补偿动量缩放使精度对齐 FedAvg
+  noise_rel: 0.5                  # 客户端噪声掩码相对尺度 x=noise_rel·‖m‖·u/‖u‖：
+                                  # denoise 精确抵消；固定大方差噪声会在范数
+                                  # 展开式中造成灾难性抵消（见 doc/ppbr.md §4.2）
   theta: null                     # 范数带阈值 θ（null=仅按数量 l' 过滤）
   beta_known: false               # 是否已知拜占庭比例 β
   beta: 0.3                       # 拜占庭比例（beta_known=true 时用于 l'=(1−β)l）
