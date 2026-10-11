@@ -43,6 +43,31 @@ HFL-Attack/
 
 攻击发生在**客户端明文训练完成后、CKKS 加密上传之前**。这对应“客户端被攻破”或“客户端本身就是恶意参与者”的威胁模型。服务器仅持公钥，永远不会拿到明文梯度，因此密文层面的防御（如异常检测）不能直接应用。
 
+### 1.3 攻击、配置、防御三者的关系
+
+```
+configs/config.yaml ── attack 段（唯一攻击配置源）
+        │
+        │  attack.enabled=false → 正常 CKKS+FedAvg，代码路径与无攻击完全一致
+        │  attack.enabled=true  → main.py 按 attack.name 从 ATTACK_REGISTRY 实例化
+        ▼
+hfl_attacks/（攻击实现库，24 个注册攻击）
+        │  数据投毒 data:*   → 初始化时替换恶意客户端 train_loader
+        │  模型投毒 model:*  → 每轮在明文域篡改恶意客户端更新
+        │  系统攻击 system:* → 每轮篡改更新 + DoS 类按 participates() 剔除掉线客户端
+        │  隐私推断 privacy:*→ 不修改训练；用 hfl_attacks/runner.py 单独评估指标
+        ▼
+ckks_fed/defenses/（防御：median / krum / trimmed_mean 等）
+   仅在明文聚合路径生效；当前密文聚合路径下密文不可解密，防御不生效，
+   保留作明文对照与层次化架构中“边缘可信节点过滤”的未来候选。
+```
+
+- 旧的 `configs/attack_config.yaml` + `main_robustness.py` + `ckks_fed/experiments/attack_runner.py`
+  攻击×防御矩阵系统已删除：它是与 `hfl_attacks/` 平行的旧实现，重复维护且与主配置漂移。
+  矩阵扫描类实验请使用 `hfl_attacks/runner.py`（按名称遍历注册表）。
+- 恶意客户端固定为编号最大的最后 `attack.malicious_count` 个；`main.py` 中
+  `experiment.attack_inst` / `experiment.malicious_ids` 可随时检查当前注入状态。
+
 ---
 
 ## 2. 数据投毒攻击（5 个）

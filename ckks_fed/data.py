@@ -1,7 +1,6 @@
 """
 训练工具函数模块
 包含数据加载、训练、评估等工具函数
-扩展支持：数据投毒攻击下的有毒数据加载器生成
 """
 
 import torch
@@ -13,7 +12,6 @@ import torchvision.transforms as transforms
 import numpy as np
 from typing import Tuple, List, Dict, Optional
 import logging
-import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -192,92 +190,6 @@ def create_client_dataloaders(dataset_name: str, num_clients: int, batch_size: i
     client_loaders = [DataLoader(ds, batch_size=batch_size, shuffle=True) for ds in client_datasets]
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return client_loaders, test_loader
-
-
-def create_poisoned_client_dataloaders(client_loaders: List[DataLoader],
-                                       malicious_clients: List[int],
-                                       data_attack_configs: List[Dict],
-                                       batch_size: Optional[int] = None) -> List[DataLoader]:
-    from ckks_fed.attacks.data_attacks import LabelFlippingAttack, BackdoorDataAttack
-    poisoned_loaders = []
-    config_map = {cid: cfg for cid, cfg in zip(malicious_clients, data_attack_configs)}
-    for cid, loader in enumerate(client_loaders):
-        if cid not in config_map:
-            poisoned_loaders.append(loader)
-            continue
-        cfg = config_map[cid]
-        attack_type = cfg.get('type', 'label_flipping')
-        num_classes = cfg.get('num_classes', 10)
-        if attack_type == 'label_flipping':
-            attack = LabelFlippingAttack(
-                num_classes=num_classes,
-                attack_type=cfg.get('flip_mode', 'random'),
-                source_class=cfg.get('source_class'),
-                target_class=cfg.get('target_class'),
-                poison_rate=cfg.get('poison_rate', 1.0),
-                seed=cfg.get('seed', 42)
-            )
-            ds = attack.apply_to_dataset(loader.dataset)
-        elif attack_type == 'backdoor':
-            ds = _create_backdoor_dataset(loader.dataset, cfg)
-        else:
-            logger.warning(f"未知的数据攻击类型: {attack_type}，客户端 {cid} 使用原始数据")
-            poisoned_loaders.append(loader)
-            continue
-        bs = batch_size if batch_size is not None else loader.batch_size
-        new_loader = DataLoader(ds, batch_size=bs, shuffle=True, num_workers=0, pin_memory=False, drop_last=False)
-        poisoned_loaders.append(new_loader)
-        logger.info(f"客户端 {cid} 已应用数据攻击: {attack_type}")
-    return poisoned_loaders
-
-
-def _create_backdoor_dataset(original_dataset, cfg):
-    class BackdoorDataset(Dataset):
-        def __init__(self, base_ds, poison_indices, target_class, trigger_size, trigger_value, position):
-            self.base_ds = base_ds
-            self.poison_indices = poison_indices
-            self.target_class = target_class
-            self.trigger_size = trigger_size
-            self.trigger_value = trigger_value
-            self.position = position
-        def __len__(self):
-            return len(self.base_ds)
-        def __getitem__(self, idx):
-            img, label = self.base_ds[idx]
-            if idx in self.poison_indices:
-                img = _add_trigger_to_tensor(img, self.trigger_size, self.trigger_value, self.position)
-                label = self.target_class
-            return img, label
-    target_class = cfg.get('target_class', 0)
-    poison_rate = cfg.get('poison_rate', 0.2)
-    trigger_size = cfg.get('trigger_size', 3)
-    trigger_value = cfg.get('trigger_value', 1.0)
-    position = cfg.get('position', 'bottom_right')
-    seed = cfg.get('seed', 42)
-    rng = random.Random(seed)
-    n = len(original_dataset)
-    poison_indices = set(rng.sample(range(n), int(n * poison_rate)))
-    return BackdoorDataset(original_dataset, poison_indices, target_class, trigger_size, trigger_value, position)
-
-
-def _add_trigger_to_tensor(img, trigger_size, trigger_value, position):
-    img = img.clone()
-    c, h, w = img.shape
-    size = min(trigger_size, h // 4, w // 4)
-    if position == "bottom_right":
-        y_start, x_start = h - size, w - size
-    elif position == "bottom_left":
-        y_start, x_start = h - size, 0
-    elif position == "top_right":
-        y_start, x_start = 0, w - size
-    elif position == "top_left":
-        y_start, x_start = 0, 0
-    elif position == "center":
-        y_start, x_start = (h - size) // 2, (w - size) // 2
-    else:
-        y_start, x_start = h - size, w - size
-    img[:, y_start:y_start+size, x_start:x_start+size] = trigger_value
-    return img
 
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,

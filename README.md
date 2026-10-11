@@ -1,6 +1,6 @@
 # HFL-Attack
 
-层次化联邦学习鲁棒性隐私保护研究框架：在 **CKKS 同态加密** 保护的联邦学习环境中，系统评估多种 **模型/数据投毒攻击** 与 **鲁棒聚合防御** 的攻防效果。
+层次化联邦学习鲁棒性隐私保护研究框架：在 **CKKS 同态加密** 保护的联邦学习环境中，系统评估 **数据投毒 / 模型投毒 / 系统攻击 / 隐私推断** 四类共 24 种攻击的效果。
 
 核心机制：
 
@@ -9,7 +9,8 @@
 - **FedAvg 联邦聚合**：支持加权平均及多种鲁棒聚合规则。
 - **TopK 稀疏化 + Global Mask Vote**：客户端本地按 batch 打分做 TopK，只上传 0/1 掩码；服务器聚合各客户端投票生成全局掩码并广播，客户端按全局掩码加密上传对应 batch，显著降低通信量。
 - **PTopk 残差补偿**（Error Feedback）：客户端维护明文残差累加器，未被选中的 batch 信息累积到下一轮，避免稀疏化造成永久信息丢失。
-- **攻击 × 防御实验矩阵**：全部实验仅运行于加密模式。
+- **层次联邦学习（云-边-端）**：可选开启边缘层（UAV 场景），客户端密文 → 边缘密文聚合 → 云密文聚合，密文全局模型沿云→边→端逐级下发；边缘节点只持公钥，不能解密。
+- **统一攻击框架**（`hfl_attacks/`）：四类攻击注册到统一注册表，由主配置 `attack` 段一键开关，攻击发生在客户端本地明文域、加密上传之前。
 
 > **已知限制**：密文域只能执行同态加权平均（FedAvg），median/krum/trimmed_mean 等
 > 需要明文坐标值的鲁棒聚合规则在纯密文服务器上无法执行——这是密钥分离架构的
@@ -25,22 +26,29 @@ HFL-Attack/
 │   ├── sparsification.py      # 客户端本地 TopK/RandK 稀疏化
 │   ├── global_mask_vote.py    # 服务器端全局掩码投票
 │   ├── ptopk.py               # Packed TopK 残差补偿 (Error Feedback)
-│   ├── client.py              # FederatedClient / MaliciousClient
+│   ├── client.py              # FederatedClient
 │   ├── server.py              # AggregationServer (聚合 + 掩码投票 + 防御过滤)
+│   ├── hierarchy.py           # 层次联邦: EdgeNode / UAV 关联 / 云-边-端密文聚合
 │   ├── client_selection.py    # 客户端随机选择 (random)
 │   ├── models.py              # MLP / CNN / LeNet 等模型定义
 │   ├── data.py                # 数据集加载与客户端数据划分 (IID / Dirichlet 非IID)
-│   ├── attacks/               # 攻击实现 (model_attacks 等)
-│   ├── defenses/              # 鲁棒聚合规则实现
-│   └── experiments/
-│       └── attack_runner.py   # 攻击×防御实验矩阵运行器
+│   ├── attacks/               # 模型投毒后端类 (供 hfl_attacks 适配)
+│   └── defenses/              # 鲁棒聚合规则实现 (仅明文聚合路径生效)
+├── hfl_attacks/               # 统一攻击库 (4 类 24 种, 注册表驱动)
+│   ├── base.py                # 攻击接口 + ATTACK_REGISTRY
+│   ├── metrics.py             # 攻击评价指标 (ASR / PSNR / MIA-AUC 等)
+│   ├── runner.py              # 攻击离线评估 CLI
+│   ├── data_poisoning/        # 数据投毒 ×5
+│   ├── model_poisoning/       # 模型投毒 ×9
+│   ├── system_attacks/        # 系统攻击 ×6
+│   └── privacy_inference/     # 隐私推断 ×4
 ├── configs/
-│   ├── config.yaml            # 主实验配置 (main.py)
-│   └── attack_config.yaml     # 攻击×防御实验配置 (main_robustness.py)
+│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构)
 ├── scripts/                   # 辅助脚本
 ├── tests/                     # 单元/集成测试
+├── doc/                       # 解释性文档 (攻击原理 / 层次架构等)
+├── paperlist/                 # 参考论文列表
 ├── main.py                    # 主实验入口: 单次加密联邦学习训练
-├── main_robustness.py         # 攻击实验入口: 攻击×防御矩阵
 └── requirements.txt
 ```
 
@@ -52,48 +60,47 @@ pip install -r requirements.txt
 # 主实验: 单次联邦学习训练 (CKKS 加密 + TopK 稀疏化 + PTopk)
 python main.py
 
-# 攻击×防御实验矩阵 (仅加密模式)
-python main_robustness.py
+# 开启攻击: 编辑 configs/config.yaml 的 attack 段
+#   attack:
+#     enabled: true
+#     name: "model:sign_flipping"   # 注册表攻击名
+#     malicious_count: 2
+python main.py
 
-# 只跑某一种攻击的所有防御组合
-python main_robustness.py --attack sign_flipping
-
-# 只跑某一种防御的所有攻击组合
-python main_robustness.py --defense median
-
-# 攻击+防御组合, 只跑一个实验
-python main_robustness.py --attack sign_flipping --defense fedavg
+# 隐私推断类攻击的离线评估 (成员推断 AUC / 梯度重建 PSNR 等)
+python -m hfl_attacks.runner --help
 
 # 使用其他配置文件
-python main_robustness.py --config path/to/config.yaml
+python main.py --config path/to/config.yaml
 ```
 
 数据集（mnist / fashion_mnist / cifar10 等）首次运行会自动下载到 `data/` 目录。实验结果输出到配置中 `output.results_dir` 指定的目录（默认 `./results`）。
 
-## 实验矩阵
+## 攻击配置
 
-`configs/attack_config.yaml` 中 `attacks` 定义攻击场景库、`defenses` 定义防御配置库；运行器默认构建 **攻击 × 防御** 的全组合矩阵（含无攻击基线）。
+攻击在主配置 `configs/config.yaml` 的 `attack` 段统一控制（`enabled: false` 时代码路径与正常 FedAvg 完全一致）：
 
-支持的攻击：`sign_flipping`、`scaling`、`gaussian_noise`、`backdoor`、`mimic_alie`、`constant`（恶意客户端可选叠加数据投毒，如标签翻转/后门触发器）。
+| 配置项 | 作用 |
+|--------|------|
+| `attack.enabled` | 攻击总开关：`false`=正常 FedAvg；`true`=注入攻击实验 |
+| `attack.name` | 攻击注册名，前缀决定类别：`data:` / `model:` / `system:` / `privacy:` |
+| `attack.malicious_count` | 恶意客户端数量（取编号最大的最后 N 个） |
 
-支持的防御聚合规则 / 异常过滤：
+攻击实现库 `hfl_attacks/` 与配置的关系：
 
-| 防御 | aggregation_rule | anomaly_filter |
-|------|------------------|----------------|
-| fedavg | fedavg | - |
-| median | median | - |
-| trimmed_mean | trimmed_mean | - |
-| krum / multi_krum | krum / multi_krum | - |
-| geometric_median | geometric_median | - |
-| norm_clip_fedavg | fedavg | norm_clip |
-| cosine_fedavg | fedavg | cosine_similarity |
-| multi_criteria_fedavg | fedavg | multi_criteria |
+- **`hfl_attacks/` = 攻击实现库**：24 个攻击类实现统一接口（`DataPoisoner` / `ClientUpdateAttack` / `SystemAttack` / `PrivacyAttack`），通过 `@register_attack` 注册到 `ATTACK_REGISTRY`；`main.py` 按 `attack.name` 实例化并注入训练循环（数据投毒替换恶意客户端 `train_loader`；模型/系统投毒在客户端本地明文域篡改更新；DoS 类按轮次剔除不上传的客户端；隐私推断不修改训练过程，指标用 `hfl_attacks/runner.py` 单独评估）。
+- **防御**（`ckks_fed/defenses/`）：median / krum / trimmed_mean 等明文域聚合规则与异常检测。它们需要明文坐标值，**在当前 CKKS 密文聚合路径下不生效**（密文不可解密），仅保留作明文对照与未来在边缘可信节点上落地的候选。
 
-若配置文件中存在 `experiments` 列表，则按该白名单精确运行指定组合；否则回退到全组合模式。
+| 类别 | 攻击 |
+|------|------|
+| 数据投毒 `data:` | label_flipping_random / label_flipping_targeted / backdoor_badnets / backdoor_blend / backdoor_edgecase |
+| 模型投毒 `model:` | sign_flipping / scaling / gaussian_noise / backdoor_model / constant / mimic_alie / alie / min_max / min_sum |
+| 系统攻击 `system:` | random_dropout / persistent_dos / free_riding_zeros / free_riding_previous / free_riding_masked / sybil_collusion |
+| 隐私推断 `privacy:` | dlg / idlg / inverting_gradients / membership_inference |
 
 ## 配置文件说明
 
-### configs/config.yaml（主实验）
+### configs/config.yaml（唯一主配置）
 
 | 配置段 | 作用 |
 |--------|------|
@@ -102,21 +109,12 @@ python main_robustness.py --config path/to/config.yaml
 | `model` | 模型结构（mlp/cnn/lenet 等）及超参数 |
 | `ckks` | CKKS 加密参数（多项式模次数、系数模链、缩放因子）、packing 策略、TopK/RandK 稀疏化、PTopk 残差补偿开关 |
 | `global_mask_vote` | 服务器端掩码聚合模式（none/union/threshold/topk）及阈值 |
+| `hierarchy` | 层次联邦开关：边缘节点数量、客户端-边缘关联策略（static/uav）、边缘采样率、UAV 移动模型 |
+| `attack` | 攻击总开关、攻击注册名、恶意客户端数量 |
 | `bandwidth` | 带宽模拟参数（用于虚拟时钟通信时间估计） |
 | `metrics` | 指标采集开关（时间、通信量、准确率等） |
 | `visualization` | 可视化开关与图像格式 |
 | `output` | 结果/模型/图表输出目录 |
-
-### configs/attack_config.yaml（攻击实验）
-
-| 配置段 | 作用 |
-|--------|------|
-| `system` / `data` / `model` / `ckks` | 同主配置，控制实验运行的联邦学习设置 |
-| `experiment_modes` | 实验模式，当前仅支持 `encrypted` |
-| `attacks` | 攻击场景库：恶意客户端数量/选择方式、数据投毒参数、模型攻击参数 |
-| `defenses` | 防御配置库：聚合规则、异常过滤方法及参数 |
-| `experiments` | （可选）显式实验白名单，精确指定要运行的 攻击×防御 组合 |
-| `output` | 实验结果输出目录 |
 
 ## 测试
 

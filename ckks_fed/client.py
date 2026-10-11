@@ -362,32 +362,3 @@ class FederatedClient:
             'ciphertext_size': self.ciphertext_size
         }
 
-
-class MaliciousClient(FederatedClient):
-    """恶意联邦学习客户端：训练后对模型更新执行攻击"""
-    
-    def __init__(self, client_id: int, model: nn.Module, train_loader, config: Dict,
-                 device: str = "cpu", model_attack=None):
-        super().__init__(client_id, model, train_loader, config, device)
-        self.model_attack = model_attack
-        self.is_malicious = True
-        tag_warn(LogTag.CLIENT, f"#{client_id} marked MALICIOUS  |  attack={model_attack.attack_name if model_attack else 'None'}")
-    
-    def local_train(self, global_params: Optional[Dict[str, torch.Tensor]] = None,
-                    encrypted_global_params: Optional[Dict[str, List]] = None,
-                    round_num: int = 0
-                    ) -> Tuple[Dict[str, torch.Tensor], float, float]:
-        model_update, avg_loss, accuracy = super().local_train(
-            global_params, encrypted_global_params, round_num=round_num)
-        # 攻击基于解密后的明文模型更新，global_params 可能为 None（当使用 encrypted_global_params 时）
-        effective_params = global_params
-        if effective_params is None and encrypted_global_params is not None:
-            effective_params = {name: param.data.clone() for name, param in self.model.named_parameters()}
-            for name, buf in self.model.named_buffers():
-                if 'running_mean' in name or 'running_var' in name:
-                    effective_params[name] = buf.clone()
-        if self.model_attack is not None:
-            model_update = self.model_attack.attack(model_update, effective_params)
-            tag_warn(LogTag.CLIENT, f"#{self.client_id} ATTACK executed: {self.model_attack.attack_name}")
-        return model_update, avg_loss, accuracy
-

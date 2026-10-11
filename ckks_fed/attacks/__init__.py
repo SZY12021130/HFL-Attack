@@ -1,28 +1,17 @@
 """
-联邦学习攻击模块
-提供数据层面和模型层面的多种攻击实现
+模型投毒攻击实现
+为 hfl_attacks/model_poisoning/classic_attacks.py 提供后端攻击类
 """
-
-from .data_attacks import (
-    LabelFlippingAttack,
-    BackdoorDataAttack,
-    get_poisoned_loader
-)
 
 from .model_attacks import (
     SignFlippingAttack,
     ScalingAttack,
     GaussianNoiseAttack,
     BackdoorModelAttack,
-    AttackBase
+    AttackBase,
 )
 
 __all__ = [
-    # 数据攻击
-    "LabelFlippingAttack",
-    "BackdoorDataAttack",
-    "get_poisoned_loader",
-    # 模型攻击
     "AttackBase",
     "SignFlippingAttack",
     "ScalingAttack",

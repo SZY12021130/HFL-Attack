@@ -291,6 +291,36 @@ class CKKSFedExperiment:
                         f"clients/edge={info['edge_clients']}"),
             ], indent=1)
 
+        # 攻击注入：attack.enabled 时从 hfl_attacks 注册表按 name 实例化。
+        # enabled=false（默认）时代码路径与正常 FedAvg 完全一致。
+        # 恶意客户端 = 编号最大的最后 malicious_count 个。
+        self.attack_inst = None
+        self.malicious_ids = []
+        attack_cfg = self.config.get('attack') or {}
+        if attack_cfg.get('enabled', False):
+            from hfl_attacks import ATTACK_REGISTRY, DataPoisoner, PrivacyAttack
+            name = attack_cfg.get('name', '')
+            if name not in ATTACK_REGISTRY:
+                raise ValueError(
+                    f"未知攻击 '{name}'，注册表可选: {sorted(ATTACK_REGISTRY)}")
+            self.attack_inst = ATTACK_REGISTRY[name]()
+            n_mal = min(int(attack_cfg.get('malicious_count', 1)), len(self.clients))
+            self.malicious_ids = [c.client_id for c in self.clients[-n_mal:]]
+            num_classes = self.config['data']['num_classes']
+            if isinstance(self.attack_inst, DataPoisoner):
+                # 数据投毒：替换恶意客户端的训练数据加载器（local_train 每轮读取）
+                for cid in self.malicious_ids:
+                    self.clients[cid].train_loader = self.attack_inst.poison_loader(
+                        self.clients[cid].train_loader, num_classes)
+            elif isinstance(self.attack_inst, PrivacyAttack):
+                # 隐私推断不改变全局模型，训练循环中为空操作；
+                # 指标（成员推断AUC/重建PSNR等）请用 hfl_attacks/runner.py 单独评估
+                tag_warn(LogTag.ATTACK,
+                         f"隐私推断攻击 {name} 不修改训练过程，请用 hfl_attacks/runner.py 评估其指标")
+            tree([
+                ("⚔️", f"Attack: {name}  |  malicious={self.malicious_ids}"),
+            ], indent=1)
+
         # 带宽模拟器（确保模拟 wall-clock 时间使用配置的异构带宽）
         from ckks_fed.bandwidth_simulator import BandwidthSimulator
         bw_cfg = self.config.get('bandwidth', {})
@@ -364,6 +394,38 @@ class CKKSFedExperiment:
             train_losses.append(loss)
             train_accs.append(acc)
             self.metrics.record('local_train_time', client.local_train_time)
+
+        # ==== 攻击：DoS 类先剔除本轮不参与的恶意客户端，其余在明文域篡改更新 ====
+        # （攻击发生在客户端本地、加密上传之前——即"客户端被攻破/恶意客户端"威胁模型；
+        #   数据投毒已在初始化时替换 train_loader，此处无需处理；
+        #   隐私推断不修改更新，见初始化时的提示。）
+        if self.attack_inst is not None and self.malicious_ids:
+            if hasattr(self.attack_inst, 'participates'):
+                keep = [(c.client_id not in self.malicious_ids)
+                        or self.attack_inst.participates(round_num)
+                        for c in selected_clients]
+                if not all(keep):
+                    dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
+                    tag_info(LogTag.ATTACK, f"round {round_num + 1}: DoS 掉线 {dropped}")
+                    selected_clients = [c for c, k in zip(selected_clients, keep) if k]
+                    client_updates = [u for u, k in zip(client_updates, keep) if k]
+                    client_weights = [w for w, k in zip(client_weights, keep) if k]
+                    train_losses = [l for l, k in zip(train_losses, keep) if k]
+                    train_accs = [a for a, k in zip(train_accs, keep) if k]
+            from hfl_attacks import ClientUpdateAttack
+            if isinstance(self.attack_inst, ClientUpdateAttack) and client_updates:
+                from hfl_attacks import AttackContext
+                mal_pos = [i for i, c in enumerate(selected_clients)
+                           if c.client_id in self.malicious_ids]
+                for i in mal_pos:
+                    ctx = AttackContext(
+                        self_update=client_updates[i],
+                        all_updates=client_updates,
+                        self_index=i,
+                        malicious_indices=mal_pos,
+                        num_classes=self.config['data']['num_classes'],
+                        round_num=round_num)
+                    client_updates[i] = self.attack_inst.attack(client_updates[i], ctx)
 
         # ==== 全局掩码投票（隐私安全：客户端本地算 mask，只上传 mask）====
         gmv_mode = self.config.get('global_mask_vote', {}).get('mode', 'none')

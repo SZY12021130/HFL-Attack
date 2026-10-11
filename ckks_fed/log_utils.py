@@ -151,6 +151,7 @@ class LogTag:
     CLIENT    = "[客户端/CLIENT]  "
     SUMMARY   = "[汇总/SUMMARY]   "
     BANDWIDTH = "[带宽/BANDWIDTH] "
+    ATTACK    = "[攻击/ATTACK]    "
 
 
 def tag_info(tag: str, message: str):

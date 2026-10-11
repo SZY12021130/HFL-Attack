@@ -64,14 +64,14 @@ class ClientUpdateAttack(ABC):
         """接收客户端本地更新，返回（可能被篡改的）上传更新"""
         raise NotImplementedError
 
-    # ---- 兼容 ckks_fed MaliciousClient 的旧接口（attack(update, global_params)）----
+    # ---- 兼容旧接口（attack(update, global_params)）----
     def legacy_attack(self, model_update, global_params=None):
         ctx = AttackContext(global_params=global_params, self_update=model_update)
         return self.attack(model_update, ctx)
 
     @property
     def attack_name(self) -> str:
-        """兼容 MaliciousClient 读取的 attack_name 属性"""
+        """攻击注册名（日志展示用）"""
         return self.name
 
 
