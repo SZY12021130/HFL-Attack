@@ -38,7 +38,8 @@ IEEE TMC 2026），不走全局掩码投票 / TopK 稀疏化 / 单密钥 CKKS �
      掩码后发云（掩码在 Σ 上相消）；云得 R·Σx''_i m'_i，除回 R，
      再用第 6 步已得的 x_i 去噪：
        m_a = (Σ_{i∈A} x''_i m'_i + Σ_{i∈A} x''_i x_i) / l'
-  9. 云更新 w_a ← w_a − ζ·m_a，回到第 0 步
+  9. 云更新 w_a ← w_a + ζ·m_a（对应论文 w ← w − ζ·m；论文 m 为梯度方向、
+     本项目 m 为参数变化量方向，符号相反），回到第 0 步
 
 掉线恢复（论文的 Shamir 份额）在单进程仿真中无掉线，未实现，见
 doc/ppbr.md「后续工作」。
@@ -160,7 +161,8 @@ class PPBRProtocol:
             updates: {client_id: 本地更新 Δ}（攻击注入已完成）
             groups:  {edge_id: [client_id, ...]} 本轮边缘-客户端分组
         Returns:
-            m_a: 全局更新（调用方做 w_a ← w_a − ζ·m_a）
+            m_a: 全局更新（调用方做 w_a ← w_a + ζ·m_a；对应论文 w ← w − ζ·m，
+            符号差异因本项目 Δ 为参数变化量、论文 m 为梯度方向）
         """
         num_edges = num_edges if num_edges is not None else \
             (max(groups) + 1 if groups else 1)

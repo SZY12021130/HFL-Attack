@@ -323,7 +323,12 @@ class CKKSFedExperiment:
 
         # 攻击注入：attack.enabled 时从 hfl_attacks 注册表按 name 实例化。
         # enabled=false（默认）时代码路径与正常 FedAvg 完全一致。
-        # 恶意客户端 = 编号最大的最后 malicious_count 个。
+        # 恶意客户端放置策略 placement：
+        #   last（默认）= 编号最大的最后 malicious_count 个（连续块）；
+        #   spread = 摊到不同边缘（每边缘先各取 1 个，多余再补）——
+        #   PPBR 的论文前提是客户端随机关联边缘（每边缘良性多数），
+        #   spread 用于"攻击 × PPBR"实验，避免恶意客户端聚集单一边缘
+        #   绕过边层聚类过滤；无层次架构时 spread 退化为 last。
         self.attack_inst = None
         self.malicious_ids = []
         attack_cfg = self.config.get('attack') or {}
@@ -335,7 +340,26 @@ class CKKSFedExperiment:
                     f"未知攻击 '{name}'，注册表可选: {sorted(ATTACK_REGISTRY)}")
             self.attack_inst = ATTACK_REGISTRY[name]()
             n_mal = min(int(attack_cfg.get('malicious_count', 1)), len(self.clients))
-            self.malicious_ids = [c.client_id for c in self.clients[-n_mal:]]
+            placement = attack_cfg.get('placement', 'last')
+            if placement == 'spread' and self.hierarchy is not None:
+                assign_map = self.hierarchy.assigner.assign(0)
+                # 每边缘客户端按编号降序，轮转各取 1 个，保证恶意客户端
+                # 尽量摊到不同边缘（对应论文的随机关联前提）
+                by_edge: Dict[int, List[int]] = {}
+                for c in self.clients:
+                    by_edge.setdefault(assign_map.get(c.client_id, 0), []).append(
+                        c.client_id)
+                for e in by_edge:
+                    by_edge[e].sort(reverse=True)
+                picked: List[int] = []
+                edges_desc = sorted(by_edge, reverse=True)
+                while len(picked) < n_mal and any(by_edge.values()):
+                    for e in edges_desc:
+                        if by_edge[e] and len(picked) < n_mal:
+                            picked.append(by_edge[e].pop(0))
+                self.malicious_ids = sorted(picked)
+            else:
+                self.malicious_ids = [c.client_id for c in self.clients[-n_mal:]]
             num_classes = self.config['data']['num_classes']
             if isinstance(self.attack_inst, DataPoisoner):
                 # 数据投毒：替换恶意客户端的训练数据加载器（local_train 每轮读取）
@@ -626,7 +650,8 @@ class CKKSFedExperiment:
               → 攻击注入（与 CKKS 轨道同一威胁模型）→ 算法 2 符号过滤
               → 客户端噪声掩码 + [x]_A + SA 掩码上传 → 边缘 SA 聚合 + [2m']_{Ei}
               → 云两轮点积范数盲化 → 范数中位数筛选 + 盲化裁剪聚合 → denoise 得 m_a
-              → 云更新 w_a ← w_a − ζ·m_a → 明文评估
+              → 云更新 w_a ← w_a + ζ·m_a（论文 w ← w − ζ·m，符号见 doc/ppbr.md）
+              → 明文评估
 
         信任模型与 CKKS 轨道不同（见 doc/ppbr.md）：云持 sk_A（论文原样），
         每个边缘自持 sk_{Ei}，客户端不持任何服务器密钥；不走全局掩码投票、
@@ -673,11 +698,12 @@ class CKKSFedExperiment:
                      f"M={st.get('M', 0):.4f} "
                      f"clip={ {e: round(x, 3) for e, x in st.get('clip', {}).items()} }")
 
-        # 云更新全局模型：w_a ← w_a − ζ·m_a（算法 5 第 5 行）
+        # 云更新全局模型：w_a ← w_a + ζ·m_a（对应算法 5 的 w ← w − ζ·m——
+        # 论文 m 为梯度方向，本项目 Δ 为参数变化量即下降方向，故符号为正）
         zeta = self.ppbr.cfg.global_zeta
         with torch.no_grad():
             for name, p in self.server.model.named_parameters():
-                p.add_(m_a[name].to(p.device), alpha=-zeta)
+                p.add_(m_a[name].to(p.device), alpha=+zeta)
 
         # 评估：论文设定 w_a 公开，直接对明文全局模型评估
         criterion = nn.CrossEntropyLoss()

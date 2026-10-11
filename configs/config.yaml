@@ -229,7 +229,13 @@ hierarchy:
 attack:
   enabled: false                  # true=开启攻击实验；false=正常 FedAvg
   name: "model:sign_flipping"     # 从上方清单中选一个注册名填入
-  malicious_count: 2              # 恶意客户端数（取编号最大的最后 N 个）
+  malicious_count: 2              # 恶意客户端数
+  placement: "last"               # 恶意客户端放置：last=编号最大的最后 N 个（连续块）；
+                                  # spread=摊到不同边缘（每边缘先各 1 个）。
+                                  # "攻击 × PPBR"实验建议 spread：PPBR 论文前提是
+                                  # 客户端随机关联边缘（每边缘良性多数），last 模式下
+                                  # 连续编号恶意客户端会聚集单一边缘、绕过边层聚类过滤
+                                  # （见 doc/ppbr.md §7）
 
 
 # ============================================================================

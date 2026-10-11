@@ -58,7 +58,7 @@ ppbr/
 | 算法 2c | 边缘 trimmed k-means，取 top-b 大簇为可信集 U_i^(T) | `controller.filter_clients` → `clustering.select_trusted_clients` |
 | 算法 3 | 客户端动量 m←φ·m+(1−φ)·Δ；边缘 SA 聚合得 m'_i 均值，加密 [2m'_i]_{Ei} | `controller.update_momenta`；`protocol.run_round` 客户端/边缘阶段 |
 | 算法 4 | 云：盲化求得 ‖m_i‖，M=median，[M−θ,M+θ] 带 + 数量 l′ 筛选 | `protocol.run_round` 两轮点积范数协议；`controller.cloud_filter_norms` |
-| 算法 5 | 裁剪 x″_i=min(1, M/‖m_i‖)；盲化聚合 + 去噪；w←w−ζ·m_a | `protocol.run_round` 盲化裁剪聚合；`main.run_round_ppbr` 做 w_a 更新 |
+| 算法 5 | 裁剪 x″_i=min(1, M/‖m_i‖)；盲化聚合 + 去噪；w←w+ζ·m_a（本项目 Δ 为变化量方向，对应论文 w←w−ζ·m） | `protocol.run_round` 盲化裁剪聚合；`main.run_round_ppbr` 做 w_a 更新 |
 
 ## 3. 一轮协议的完整时序（`ppbr/protocol.py:run_round` + `main.py:run_round_ppbr`）
 
@@ -91,7 +91,8 @@ ppbr/
 14 云取全局随机标量 R，发 t_i = R·x″_i（边缘看 t_i 是随机数）
 15 边缘算 u_i = t_i·m'_i，叠加边缘级 SA 掩码后发云（掩码在 Σ 上相消）
 16 云：m_a = (Σ t_i m'_i / R + Σ x″_i x_i) / l′ = Σ x″_i m_i / l′
-17 云更新 w_a ← w_a − ζ·m_a，回到第 0 步；评估对明文 w_a 进行
+17 云更新 w_a ← w_a + ζ·m_a（论文 w ← w − ζ·m；符号差异：Δ 为参数变化
+   量方向、m 为梯度方向），回到第 0 步；评估对明文 w_a 进行
 ```
 
 ### 各实体可见性（泄露分析）
@@ -148,13 +149,33 @@ run_experiment ── ppbr.enabled ? run_round_ppbr : run_round_encrypted
 run_round_ppbr:
   云明文广播 w_a → 客户端 local_train → 攻击注入(_apply_attacks_to_updates)
                 → ppbr.run_round(完整协议, 返回 m_a)
-                → w_a ← w_a − ζ·m_a → evaluate(明文) → 指标入库
+                → w_a ← w_a + ζ·m_a → evaluate(明文) → 指标入库
 ```
 
 fail-open：若算法 2 过滤后无可信客户端、或云筛选空集，本轮 m_a 为零向量，
 全局模型不更新，训练继续。
 
-## 6. 复现实验
+## 6. 威胁模型前提：恶意客户端的放置（attack.placement）
+
+PPBR 的鲁棒性保证依赖**每个边缘内良性客户端占多数**（论文假设客户端随机
+关联边缘服务器）。本项目的静态分片把连续编号的客户端划入同一边缘，若采用
+默认 `attack.placement: last`（编号最大的最后 N 个为恶意），当
+`malicious_count ≥ 每边缘客户端数`时会出现**全恶意边缘**：边层 CLDP 聚类对
+一致作恶的恶意簇无效，云层的范数筛选对保范数的攻击（sign flipping、ALIE、
+MinMax 等）也无差别——这是范数类方法的固有边界，不是实现缺陷。
+
+**"攻击 × PPBR"实验请使用 `attack.placement: spread`**（每边缘先各摊 1 个
+恶意客户端），对应论文的随机关联假设。复现示例：
+
+```bash
+# configs/config.yaml:
+#   attack: {enabled: true, name: "model:sign_flipping", malicious_count: 3,
+#            placement: "spread"}
+#   ppbr:   {enabled: true}
+python main.py
+```
+
+## 7. 复现实验
 
 ```bash
 # 无攻击 + PPBR 完整协议（精度应与 FedAvg 基线基本一致）

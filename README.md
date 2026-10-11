@@ -179,7 +179,8 @@ CKKSFedExperiment.__init__()
                   • 边缘：SA 聚合得 m'_i；同态求和 [x_i]_A；[2m'_i]_{Ei} 发云
                   • 云：两轮点积范数盲化 → 中位数筛选 + 裁剪系数 x″_i
                   • 盲化裁剪聚合（全局随机 R）→ denoise 得 m_a
-5. 全局更新       w_a ← w_a − ζ·m_a（算法 5 第 5 行）
+5. 全局更新       w_a ← w_a + ζ·m_a（论文 w ← w − ζ·m；Δ 为参数变化量
+                  方向故符号为正，见 doc/ppbr.md §3 第 17 步）
 6. 明文评估       evaluate(server.model) → 指标入库
 ```
 

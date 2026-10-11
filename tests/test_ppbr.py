@@ -169,6 +169,50 @@ def test_ppbr_auto_enables_hierarchy_end_to_end(tmp_path):
 
 
 @pytest.mark.slow
+def test_ppbr_update_direction_matches_delta_semantics(tmp_path):
+    """全局更新方向必须与 FedAvg 语义一致：Δw = +ζ·m_a（Δ 为参数变化量方向，
+    对应论文 w ← w − ζ·m 的符号换算）。符号写反时模型朝损失增大方向移动。"""
+    from main import CKKSFedExperiment
+    from ckks_fed.data import get_model_params
+    exp = CKKSFedExperiment(_write_cfg(tmp_path), output_dir=str(tmp_path))
+    before = get_model_params(exp.server.model)
+    captured = {}
+    orig_run_round = exp.ppbr.run_round
+
+    def spy(round_num, updates, groups, **kw):
+        m_a = orig_run_round(round_num, updates, groups, **kw)
+        captured['m_a'] = m_a
+        return m_a
+
+    exp.ppbr.run_round = spy
+    exp.run_round_ppbr(0)
+    after = get_model_params(exp.server.model)
+    zeta = exp.ppbr.cfg.global_zeta
+    for k in before:
+        expect = zeta * captured['m_a'][k]
+        assert torch.allclose(after[k] - before[k], expect, rtol=1e-4, atol=1e-6), \
+            f"全局更新方向错误: {k} 的 Δw 应为 +ζ·m_a"
+
+
+@pytest.mark.slow
+def test_attack_spread_placement_distributes_across_edges(tmp_path):
+    """placement=spread 时恶意客户端应摊到不同边缘（PPBR 论文的随机关联前提）"""
+    from main import CKKSFedExperiment
+    p = _write_cfg(tmp_path, attack='model:sign_flipping')
+    with open(p, encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+    cfg['attack']['placement'] = 'spread'
+    cfg['attack']['malicious_count'] = 3
+    with open(p, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True)
+    exp = CKKSFedExperiment(p, output_dir=str(tmp_path))
+    assign = exp.hierarchy.assigner.assign(0)
+    edges_of_mal = {assign[c] for c in exp.malicious_ids}
+    assert len(edges_of_mal) == 3, \
+        f"3 个恶意客户端应分布在 3 个边缘，实际: {exp.malicious_ids}"
+
+
+@pytest.mark.slow
 def test_ppbr_with_attack_end_to_end(tmp_path):
     """PPBR 完整协议 + 模型投毒组合：训练跑通且动量/筛选状态正常"""
     from main import CKKSFedExperiment
