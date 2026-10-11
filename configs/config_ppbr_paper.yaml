@@ -1,0 +1,345 @@
+# ============================================================================
+# HFL-Attack 主配置文件 —— PPBR 论文复现实验专用（He 等, IEEE TMC 2026）
+# ============================================================================
+# 用法: python main.py --config configs/config_ppbr_paper.yaml
+#
+# 与论文 §VIII 实验设置一致的参数：
+#   MNIST + MLP（batch 32）| 240 客户端 ÷ 8 边缘 | Non-IID Dirichlet α=0.5
+#   本地 SGD lr=0.01、每客户端 ~24 本地步（≈论文 20 步）| 200 轮
+#   PPBR：ε_χ=3, L=6, L'=7, k=2, b=1, φ=0.9, β=0.3，SA=真实 X25519+HKDF+Shamir
+#   无攻击（attack.enabled=false）干净运行
+# 其余段落继承 configs/config.yaml（PPBR 轨道不使用 CKKS/TopK/投票配置）。
+# ============================================================================
+
+# ============================================================================
+# 一、系统配置 (system)
+# ============================================================================
+system:
+  num_clients: 240                    # 【论文 §VIII】240 个客户端
+  num_rounds: 200                     # 【论文 §VIII】FedAvg 200 轮
+  num_epochs: 3                       # 每客户端每轮本地步数：250 样本/shard ÷ batch 32 ≈ 8 步/epoch
+                                     # ×3 ≈ 24 步 ≈ 论文"每客户端本地 20 步"
+  batch_size: 32                      # 【论文 §VIII】MNIST 实验 batch size = 32
+  learning_rate: 0.01                 # 【论文 §VIII】本地 SGD lr = 0.01
+  device: "cuda"                      # 训练设备 ("cpu"/"cuda"，GPU 不可用时自动回退 CPU)
+  random_seed: 42                     # 全局随机种子
+
+  # 每轮参与训练的客户端比例 (1.0=全部参与；0.5=半数参与，最常用)
+  client_sampling_rate: 0.5
+
+  # 客户端上传"差值"还是"完整权重"
+  #   true  = 上传 Δ = W_new - W_old，服务器做累加
+  #   false = 上传完整 W_new（需配合 coeff_mod_bit_sizes=[40,20,40] + global_scale=2^20）
+  upload_difference: true
+
+  # 优化器配置
+  optimizer:
+    name: "sgd"                      # 【论文 §VIII】本地优化器 SGD
+    lr: 0.01                         # 本地 lr = 0.01（覆盖 system.learning_rate）
+    momentum: 0.0                    # 论文未用动量 SGD，置 0
+
+  # 学习率调度器（可选）
+  lr_scheduler:
+    enabled: false
+    name: "step"                     # "step" | "cosine" | "exponential"
+    step_size: 10
+    gamma: 0.5
+    T_max: 30
+    eta_min: 0.0
+
+
+# ============================================================================
+# 二、数据集配置 (data)
+# ============================================================================
+data:
+  # 支持: ["mnist", "fashion_mnist", "cifar10", "cifar100", "svhn", "emnist"]
+  dataset: "mnist"                   # 【论文 §VIII】MNIST + MLP
+  data_dir: "./data"                 # 数据集本地缓存目录（首次运行自动下载）
+  num_classes: 10                    # 程序会根据 dataset 自动推断，通常无需修改
+  iid: false                         # 【论文 §VIII】Non-IID 划分
+  alpha: 0.5                         # 【论文 §VIII】Dirichlet α = 0.5（论文默认实验设置）
+
+
+# ============================================================================
+# 三、模型配置 (model)
+# ============================================================================
+model:
+  # 【论文 §VIII】MNIST 实验使用 MLP
+  # CKKS 密文膨胀率约 10x~20x，lenet/mlp 适合快速实验
+  name: "mlp"
+  hidden_dims: [256, 128]            # MLP 隐藏层维度
+  dropout: 0.2                       # MLP/CNN Dropout 率
+
+
+# ============================================================================
+# 四、CKKS 同态加密配置 (ckks)
+# ============================================================================
+# 三个参数必须配套使用：
+#   • poly_modulus_degree (N): 决定安全等级和 slot 数量
+#   • coeff_mod_bit_sizes:   系数模数链，总和决定乘法深度
+#   • global_scale:          明文缩放因子（2 的幂次）
+#
+# 推荐预设：
+#   ┌──────────────┬────────┬──────────────────────┬──────────────┐
+#   │ 预设         │ N      │ coeff_mod_bit_sizes  │ global_scale │
+#   ├──────────────┼────────┼──────────────────────┼──────────────┤
+#   │ 轻量快速     │ 4096   │ [40, 20, 40]         │ 2^20         │
+#   │ 标准均衡     │ 8192   │ [40, 20, 40]         │ 2^20         │
+#   │ 高精度长轮次 │ 16384  │ [50, 30, 30, 50]     │ 2^30         │
+#   │ 高精度(差值) │ 8192   │ [60, 40, 40, 60]     │ 2^40         │
+#   └──────────────┴────────┴──────────────────────┴──────────────┘
+# ⚠️ upload_difference=false 时，服务器需对密文做加权平均（scale 平方），
+#    必须使用 [40, 20, 40] + 2^20，否则精度归零。
+ckks:
+  poly_modulus_degree: 8192
+  coeff_mod_bit_sizes: [60,40,40,60]
+  global_scale: 1099511627776        # 2^40
+  slot_packing: true                 # true 可大幅降低通信量，建议保持开启
+
+  # packing: 模型更新打包策略（减少 ciphertext 数量）
+  #   "layerwise" = 逐层加密（默认，兼容原代码）
+  #   "merged"    = 合并所有层后统一分块加密（减少碎片，推荐）
+  packing:
+    strategy: "merged"
+
+  # --------------------------------------------------------------------------
+  # sparsification: 客户端本地包级 TopK/RandK 稀疏化
+  #   客户端本地训练得到明文梯度 → 按 batch 打分选出 TopK batch →
+  #   只上传 0/1 mask（极小）→ 服务器 global_mask_vote 聚合出全局 mask →
+  #   客户端按全局 mask 加密上传对应 batch。
+  #
+  #   batch_size 不应超过 slot_count（poly_modulus_degree // 2 = 4096）
+  # --------------------------------------------------------------------------
+  sparsification:
+    strategy: "topk"                 # "none" | "topk" | "randk"
+    sparsity_rate: 0.1               # 客户端本地保留的 batch 投票比例
+    batch_size: 4096                 # 每个 batch 的大小，建议等于 slot_count
+    seed: 42                         # randk 策略的随机种子
+
+    # TopK 评分方式（仅 strategy="topk" 时生效）
+    #   avg_abs : 绝对值平均值  【默认，最稳定】
+    #   l2_norm : L2 范数       【对大值更敏感】
+    #   l1_norm : L1 范数
+    #   max_abs : 最大绝对值
+    scoring_method: "l2_norm"
+
+  # --------------------------------------------------------------------------
+  # ptopk: Packed TopK with Error Feedback（残差补偿，基于 STC 思想）
+  #   客户端维护明文残差累加器，每轮上传前先把残差叠加到当前梯度上再 TopK，
+  #   未被选中的 batch 信息保留在残差中累积到下一轮，避免永久丢失。
+  #   数学形式: r_{t+1} = (Δ_t + r_t) − TopK(Δ_t + r_t);  upload_t = TopK(Δ_t + r_t)
+  #   仅当 sparsification.strategy != "none" 时生效。
+  # --------------------------------------------------------------------------
+  ptopk:
+    enable: true                     # PTopk 总开关
+
+    # 客户端残差补偿器（Error Feedback）
+    client_residual:
+      enabled: true
+      # 跨轮陈旧残差衰减：客户端间歇性参与时，旧残差按掉线轮数 gap 指数衰减
+      #   R_new = R_old * stale_gamma^(gap-1)。1.0 = 关闭衰减
+      stale_gamma: 0.5
+      # 每轮自然衰减（安全阀，防止未选中 batch 残差无限增长）。1.0 = 关闭
+      decay_gamma: 0.3
+      # 残差范数裁剪阈值（0 = 关闭）
+      clip_tau: 0.0
+
+
+# ============================================================================
+# 五、全局掩码投票配置 (global_mask_vote)
+# ============================================================================
+# 服务器端 mask 聚合策略：客户端只上传 0/1 mask，服务器聚合生成 global_mask
+# 并广播，所有客户端按全局掩码加密上传密文，服务器永远看不到明文梯度。
+# 仅当 ckks.sparsification.strategy != "none" 时生效。
+global_mask_vote:
+  mode: "topk"                       # "none" | "union" | "threshold" | "topk"
+                                     #   none      = 关闭全局投票（客户端独立稀疏化）
+                                     #   union     = 并集
+                                     #   threshold = 阈值（超过 θ% 客户端选中才纳入）
+                                     #   topk      = 按选中次数取前 K 个 batch
+  threshold_pct: 0.5                # threshold 模式阈值
+  topk_count_k: 20                  # topk 模式：取选中次数前 K 的 batch
+                                    #   ⚠️ 建议 ≥ 总 batch 数的 20%，避免覆盖率过低
+  topk_pct: 0.1
+
+
+# ============================================================================
+# 六、层次联邦学习配置 (hierarchy) —— 云-边-端三层架构
+# ============================================================================
+# enabled=false 时保持标准"单服务器-多客户端"架构，行为与之前完全一致。
+# enabled=true 时：
+#   客户端密文 → 边缘节点密文聚合 → 边缘密文 → 云服务器密文聚合
+#   → 密文全局模型沿 云→边→端 逐级下发。边缘节点只持公钥，不能解密。
+hierarchy:
+  enabled: false                     # PPBR 开启时会自动置 true（main.py），无需手动改
+  num_edges: 8                    # 【论文默认】l = 8 个边缘 → 240 客户端 ÷ 8 = 30 客户端/边缘
+  assignment: "static"            # 客户端-边缘关联策略:
+                                  #   "static" = 固定分片（边缘 e 负责连续一段客户端）
+                                  #   "uav"    = UAV 随机路点移动，客户端每轮关联最近 UAV
+  edge_selection_rate: 1.0        # 每轮参与训练的边缘节点比例 (1.0=全部)
+
+  # UAV 移动模型（仅 assignment="uav" 时生效）
+  uav:
+    area_size: 1000.0             # 仿真区域边长（米）
+    speed: 30.0                   # UAV 每轮移动速度（米/轮）
+    coverage_radius: 400.0        # UAV 覆盖半径（米）
+    strict_coverage: false        # true=半径外客户端本轮不参与；false=回退到最近 UAV
+    seed: 42
+
+
+# ============================================================================
+# 七、攻击配置 (attack) —— hfl_attacks 注册表攻击，唯一攻击配置源
+# ============================================================================
+# enabled=false：不注入任何攻击，就是正常的 CKKS+FedAvg 训练。
+# enabled=true：按 name 从 hfl_attacks 注册表(ATTACK_REGISTRY)选取一种攻击，
+# 恶意客户端为编号最大的最后 malicious_count 个，其数据/更新在训练中被篡改。
+# 攻击实现见 hfl_attacks/（注册表按 name 实例化）。防御（median/krum 等基于明文的
+# 聚合规则，ckks_fed/defenses/）只在非加密聚合路径生效；当前 CKKS 密文聚合路径下
+# 密文不可解密，防御仅作为明文对照/未来工作。
+#
+# ── 可选攻击清单（取消对应 name 注释即可选用，每类至少 3 种）────────────
+#
+# ▍数据投毒 data:（初始化时替换恶意客户端的训练数据加载器）
+#   data:label_flipping_random      随机标签翻转 (paper: label flipping survey)
+#   data:label_flipping_targeted    定向标签翻转（源类→目标类）
+#   data:backdoor_badnets           BadNets 后门触发器 (Gu et al. 2019)
+#   data:backdoor_blend             Blend 后门 (Chen et al. 2017)
+#   data:backdoor_edgecase          Edge-case 后门 (Wang et al. 2020)
+#
+# ▍模型投毒 model:（每轮在客户端明文域篡改上传更新，加密上传之前）
+#   model:sign_flipping             符号翻转 (Baruch et al. 2019)
+#   model:scaling                   缩放攻击 (Bagdasaryan et al. 2020)
+#   model:gaussian_noise            高斯噪声更新
+#   model:backdoor_model            后门模型注入
+#   model:constant                  常数/零更新
+#   model:mimic_alie                ALIE 近似（简版）
+#   model:alie                      少量即有效 (ALIE, Baruch et al. 2019)
+#   model:min_max                   Min-Max 距离规避 (Shejwalkar et al. 2021)
+#   model:min_sum                   Min-Sum 距离规避 (Shejwalkar et al. 2021)
+#   model:ipm                       IPM 内积操纵合谋 (Xie et al. 2021；PPBR 论文评测攻击之一)
+#
+# ▍系统攻击 system:（篡改更新 + 可选控制客户端是否参与本轮）
+#   system:random_dropout           随机掉线 (DoS)
+#   system:persistent_dos           持续性拒绝服务
+#   system:free_riding_zeros        搭便车：全零更新
+#   system:free_riding_previous     搭便车：上一轮更新
+#   system:free_riding_masked       搭便车：掩码伪装
+#   system:sybil_collusion          女巫合谋 (Douceur 2002)
+#
+# ▍隐私推断 privacy:（不修改训练过程；指标用 python -m hfl_attacks.runner 单独评估）
+#   privacy:dlg                     深度梯度泄漏 (DLG, Zhu et al. 2019)
+#   privacy:idlg                    改进 DLG (iDLG, Zhao et al. 2020)
+#   privacy:inverting_gradients     梯度反演 (Geiping et al. 2020)
+#   privacy:membership_inference    成员推断 (Shokri et al. 2017)
+#
+attack:
+  enabled: false                  # true=开启攻击实验；false=正常 FedAvg
+  name: "model:sign_flipping"     # 从上方清单中选一个注册名填入
+  malicious_count: 2              # 恶意客户端数
+  placement: "last"               # 恶意客户端放置：last=编号最大的最后 N 个（连续块）；
+                                  # spread=摊到不同边缘（每边缘先各 1 个）。
+                                  # "攻击 × PPBR"实验建议 spread：PPBR 论文前提是
+                                  # 客户端随机关联边缘（每边缘良性多数），last 模式下
+                                  # 连续编号恶意客户端会聚集单一边缘、绕过边层聚类过滤
+                                  # （见 doc/ppbr.md §7）
+
+
+# ============================================================================
+# 八、PPBR 配置 (ppbr) —— 可插拔拜占庭鲁棒防御（He 等, IEEE TMC 2026）
+# ============================================================================
+# enabled=true 时自动开启 hierarchy（云-边-端架构是 PPBR 的前提），无需手动设置。
+# 严格按论文算法实现（完整阅读笔记: paperlist/ppbr_notes.md）：
+#   算法2(CC) 客户端符号统计(正/负/零号比例) → CLDP 差分隐私扰动 → 边缘
+#             trimmed k-means 聚类过滤恶意客户端；
+#   算法3(EA) 可信客户端动量 m=φ·m+(1−φ)·Δ → 边缘均值；
+#   算法4(EF) 云：范数中位数 M=median({‖m_i‖₂})，按 [M−θ, M+θ] 带 + 数量 l'
+#             筛选恶意边缘（l'=(1−β)l 已知 β，否则 0.5l——无需先知拜占庭比例）；
+#   算法5(GA) 裁剪系数 x''_i=min(1, M/‖m_i‖₂)，全局更新 w ← w − ζ·Σ x''_i·w_i·m_i。
+# 与 attack 段配合即可做"攻击 × PPBR 防御"实验。
+ppbr:
+  enabled: true                   # ★ 开启 PPBR 完整协议（自动开启 hierarchy；
+                                  # 双轨架构：整条加解密路线切换为论文协议，
+                                  # 不走全局投票/TopK/单密钥 CKKS 聚合，见 doc/ppbr.md）
+  epsilon_chi: 3.0                # CLDP 隐私预算 ε_χ（论文 ε_χ≥3 时 >80% 良性被选中）
+  L: 6.0                          # 【论文默认】CLDP 球内半径阈值
+  L_prime: 7.0                    # 【论文默认】CLDP 立方支撑半径
+  num_coords: 100                 # 云每轮广播的符号统计坐标数 ι
+  k: 2                            # 【论文默认】trimmed k-means 簇数
+  b: 1                            # 【论文默认】取尺寸最大的前 b 个簇为可信集
+  trim_ratio: 0.3                 # trimmed k-means 每轮剔除比例
+  momentum_phi: 0.9               # 【论文默认】客户端动量系数 φ
+  global_zeta: 10.0               # 全局步长：论文 ζ=0.0125 作用于完整模型梯度方向；
+                                  # 本项目上传差值且首轮动量缩 (1−φ)，ζ=1/(1−φ)=10 补偿
+                                  # （见 doc/ppbr.md §4.8，无攻击时精度与 FedAvg 对齐）
+  noise_rel: 0.5                  # 客户端噪声掩码相对尺度 x=noise_rel·‖m‖·u/‖u‖：
+                                  # denoise 精确抵消；固定大方差噪声会在范数
+                                  # 展开式中造成灾难性抵消（见 doc/ppbr.md §4.2）
+  theta: null                     # 范数带阈值 θ（null=仅按数量 l' 过滤）
+  beta_known: false               # 是否已知拜占庭比例 β
+  beta: 0.3                       # 【论文默认】拜占庭比例（beta_known=true 时用于 l'=(1−β)l；
+                                  # 本配置为无攻击干净运行，仅作筛选参数）
+  sa_key_exchange: "dh"           # SA 密钥协商："dh"=真实 X25519+HKDF + Shamir 掉线
+                                  # 恢复（Bonawitz'17，见 doc/ppbr.md §3.2）；
+                                  # "sim"=哈希种子模拟（不抗合谋，仅供对照）
+  sa_simulate_dropout_rate: 0.0   # SA 掉线仿真比例 [0,1]（仅实验用途；组<4 不触发，
+                                  # 保证幸存方 ≥ max(2,t) 使份额可恢复；early 掉线
+                                  # 输入不计入聚合，late 掉线输入仍计入）
+
+
+# ============================================================================
+# 九、带宽模拟配置 (bandwidth)
+# ============================================================================
+# 用于虚拟时钟的通信时间模拟（round time = 传输时间 + 训练时间）。
+bandwidth:
+  base_dl_bw: 1024.0                 # 基础下行带宽 (kbps)：256~512≈3G，1024~2048≈4G/WiFi
+  base_ul_bw: 512.0                  # 基础上行带宽 (kbps)，建议为下行的 0.3~0.5 倍
+  variance: 0.3                      # 带宽变异系数 [0,1)，越大客户端间差异越大
+  distribution: "lognormal"          # "uniform" | "lognormal"（lognormal 更接近真实网络）
+
+  # 低带宽客户端过滤（true = 过滤掉上下行任一带宽低于阈值的客户端）
+  # 注意：需要基础带宽(base_dl_bw)与阈值同量级，否则可能无法采样出足够客户端
+  filter_low_bandwidth: false
+  min_dl_bw_kbps: 5120               # 5 Mbps
+  min_ul_bw_kbps: 5120
+
+  # 最高带宽限制（inf = 不限制）
+  max_dl_bw_kbps: .inf
+  max_ul_bw_kbps: .inf
+
+
+# ============================================================================
+# 十、实验指标配置 (metrics)
+# ============================================================================
+metrics:
+  compute_time: true
+  communication_cost: true
+  ciphertext_size: true
+  expansion_ratio: true
+  accuracy: true
+  loss: true
+  communication_rounds: true
+  dropout_rate: true
+  cpu_utilization: true
+  key_distribution_cost: true
+  memory_usage: true
+
+
+# ============================================================================
+# 十一、可视化配置 (visualization)
+# ============================================================================
+visualization:
+  enabled: true
+  save_format: "png"
+  dpi: 300
+  figure_size: [10, 6]
+  style: "seaborn-v0_8-whitegrid"
+
+
+# ============================================================================
+# 十二、输出配置 (output)
+# ============================================================================
+output:
+  results_dir: "./results"          # 实验结果（metrics.json, report.md）保存目录
+  model_dir: "./history_models"     # 每轮模型 checkpoint 保存目录
+  viz_dir: "./visualization"        # 可视化图表保存目录
+  save_interval: 999                # 每 N 轮保存一次模型；999 = 仅保存最终模型
