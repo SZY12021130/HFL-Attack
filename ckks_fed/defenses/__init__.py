@@ -9,6 +9,9 @@ from .aggregation_rules import (
     trimmed_mean_aggregate,
     krum_aggregate,
     multi_krum_aggregate,
+    geometric_median_aggregate,
+    dnc_aggregate,
+    centered_clipping_aggregate,
 )
 
 from .anomaly_detection import (
@@ -24,6 +27,9 @@ __all__ = [
     "trimmed_mean_aggregate",
     "krum_aggregate",
     "multi_krum_aggregate",
+    "geometric_median_aggregate",
+    "dnc_aggregate",
+    "centered_clipping_aggregate",
     # 异常检测
     "norm_clip_updates",
     "cosine_similarity_filter",

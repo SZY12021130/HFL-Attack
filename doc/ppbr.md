@@ -55,6 +55,17 @@ SA（Bonawitz'17 成对掩码安全聚合）、PLHE（BFV + 边缘独立密钥 +
 4. **边缘掉线**：SA 的 Shamir 阈值掉线容忍在仿真中天然成立（单进程不会掉线）；
    `hierarchy.edge_selection_rate < 1` 时参与边缘数减少，`l′` 按幸存数自适应。
 
+## 4.1 PPBR 论文评测攻击与对比基线的实现状态
+
+- **论文评测的 6 种攻击**：label flipping ✅（`data:label_flipping_random/targeted`）、
+  sign flipping ✅（`model:sign_flipping`）、Gaussian ✅（`model:gaussian_noise`）、
+  ALIE ✅（`model:alie`）、IPM ✅（`model:ipm`，本项目按论文公式补齐）、
+  MinMax ✅（`model:min_max`）。
+- **论文对比基线**：Median / TrimmedMean / GeoMed / Multi-Krum / **DnC** /
+  **CenteredClipping** 已全部实现于 `ckks_fed/defenses/aggregation_rules.py`
+  （后两者为本轮补齐）。注意它们与 PPBR 不同：PPBR 可在密文流程下工作
+  （云只见范数、边缘只见符号元组），而这些基线需要明文坐标值，仅作明文对照。
+
 ## 4. 一轮训练中的调用位置（main.py `run_round_encrypted`）
 
 ```

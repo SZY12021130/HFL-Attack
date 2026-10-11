@@ -1,6 +1,6 @@
 # HFL-Attack
 
-层次化联邦学习鲁棒性隐私保护研究框架：在 **CKKS 同态加密** 保护的联邦学习环境中，系统评估 **数据投毒 / 模型投毒 / 系统攻击 / 隐私推断** 四类共 24 种攻击的效果。
+层次化联邦学习鲁棒性隐私保护研究框架：在 **CKKS 同态加密** 保护的联邦学习环境中，系统评估 **数据投毒 / 模型投毒 / 系统攻击 / 隐私推断** 四类共 25 种攻击的效果。
 
 核心机制：
 
@@ -35,7 +35,7 @@ HFL-Attack/
 │   ├── data.py                # 数据集加载与客户端数据划分 (IID / Dirichlet 非IID)
 │   ├── attacks/               # 模型投毒后端类 (供 hfl_attacks 适配)
 │   └── defenses/              # 鲁棒聚合规则实现 (仅明文聚合路径生效)
-├── hfl_attacks/               # 统一攻击库 (4 类 24 种, 注册表驱动)
+├── hfl_attacks/               # 统一攻击库 (4 类 25 种, 注册表驱动)
 │   ├── base.py                # 攻击接口 + ATTACK_REGISTRY
 │   ├── metrics.py             # 攻击评价指标 (ASR / PSNR / MIA-AUC 等)
 │   ├── runner.py              # 攻击离线评估 CLI
@@ -100,13 +100,13 @@ python main.py --config path/to/config.yaml
 
 攻击实现库 `hfl_attacks/` 与配置的关系：
 
-- **`hfl_attacks/` = 攻击实现库**：24 个攻击类实现统一接口（`DataPoisoner` / `ClientUpdateAttack` / `SystemAttack` / `PrivacyAttack`），通过 `@register_attack` 注册到 `ATTACK_REGISTRY`；`main.py` 按 `attack.name` 实例化并注入训练循环（数据投毒替换恶意客户端 `train_loader`；模型/系统投毒在客户端本地明文域篡改更新；DoS 类按轮次剔除不上传的客户端；隐私推断不修改训练过程，指标用 `hfl_attacks/runner.py` 单独评估）。
+- **`hfl_attacks/` = 攻击实现库**：25 个攻击类实现统一接口（`DataPoisoner` / `ClientUpdateAttack` / `SystemAttack` / `PrivacyAttack`），通过 `@register_attack` 注册到 `ATTACK_REGISTRY`；`main.py` 按 `attack.name` 实例化并注入训练循环（数据投毒替换恶意客户端 `train_loader`；模型/系统投毒在客户端本地明文域篡改更新；DoS 类按轮次剔除不上传的客户端；隐私推断不修改训练过程，指标用 `hfl_attacks/runner.py` 单独评估）。
 - **防御**（`ckks_fed/defenses/`）：median / krum / trimmed_mean 等明文域聚合规则与异常检测。它们需要明文坐标值，**在当前 CKKS 密文聚合路径下不生效**（密文不可解密），仅保留作明文对照与未来在边缘可信节点上落地的候选。
 
 | 类别 | 攻击 |
 |------|------|
 | 数据投毒 `data:` | label_flipping_random / label_flipping_targeted / backdoor_badnets / backdoor_blend / backdoor_edgecase |
-| 模型投毒 `model:` | sign_flipping / scaling / gaussian_noise / backdoor_model / constant / mimic_alie / alie / min_max / min_sum |
+| 模型投毒 `model:` | sign_flipping / scaling / gaussian_noise / backdoor_model / constant / mimic_alie / alie / min_max / min_sum / ipm |
 | 系统攻击 `system:` | random_dropout / persistent_dos / free_riding_zeros / free_riding_previous / free_riding_masked / sybil_collusion |
 | 隐私推断 `privacy:` | dlg / idlg / inverting_gradients / membership_inference |
 
@@ -187,7 +187,7 @@ CKKSFedExperiment.__init__()
 ### 验证攻击是否生效
 
 ```bash
-# 全部 24 个攻击逐一跑 1 轮端到端（非层次模式，约 10 分钟）
+# 全部 25 个攻击逐一跑 1 轮端到端（非层次模式，约 10 分钟）
 python scripts/verify_attacks.py
 
 # 只验证初始化注入（秒级）

@@ -210,6 +210,7 @@ hierarchy:
 #   model:alie                      少量即有效 (ALIE, Baruch et al. 2019)
 #   model:min_max                   Min-Max 距离规避 (Shejwalkar et al. 2021)
 #   model:min_sum                   Min-Sum 距离规避 (Shejwalkar et al. 2021)
+#   model:ipm                       IPM 内积操纵合谋 (Xie et al. 2021；PPBR 论文评测攻击之一)
 #
 # ▍系统攻击 system:（篡改更新 + 可选控制客户端是否参与本轮）
 #   system:random_dropout           随机掉线 (DoS)

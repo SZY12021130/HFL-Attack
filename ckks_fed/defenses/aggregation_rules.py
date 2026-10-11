@@ -4,8 +4,10 @@
 """
 
 import torch
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import copy
+
+import numpy as np
 
 
 def fedavg_aggregate(updates: List[Dict[str, torch.Tensor]],
@@ -206,5 +208,128 @@ def geometric_median_aggregate(updates: List[Dict[str, torch.Tensor]],
             diff += torch.sum((current[name] - prev[name]) ** 2).item()
         if diff ** 0.5 < tol:
             break
-    
+
     return current
+
+
+# =====================================================================
+# PPBR 论文对比基线（He 等, IEEE TMC 2026）：Median、TrimmedMean、GeoMed、
+# Multi-Krum、DnC、CenteredClipping —— 已全部实现于 ckks_fed/defenses/，
+# 但只能在明文聚合路径执行；CKKS 密文聚合路径下不生效（见 README 已知限制）。
+# =====================================================================
+
+def dnc_aggregate(updates: List[Dict[str, torch.Tensor]],
+                  num_byzantine: Optional[int] = None,
+                  sub_dim: Optional[int] = None,
+                  num_iter: int = 1,
+                  trim_ratio: float = 0.1,
+                  seed: int = 42) -> Dict[str, torch.Tensor]:
+    """
+    DnC (Detect and Clean, Shejwalkar & Houmansadr, USENIX Security 2021)
+    —— PPBR 论文对比基线之一。
+
+    流程（单轮迭代）：
+      1) 随机投影：把更新随机采样到 sub_dim 个坐标；
+      2) 谱检测：中心化的投影矩阵的 top 奇异向量，剔除投影得分最高的
+         num_byzantine 个离群更新；
+      3) 聚类：对幸存更新做 k-means (k=2)，取直径较小的簇；
+      4) 对选中簇做 trimmed mean 聚合。
+    """
+    n = len(updates)
+    if n == 0:
+        raise ValueError("DnC: 没有可聚合的更新")
+    if n <= 2:
+        return fedavg_aggregate(updates, [1.0] * n)
+
+    rng = np.random.RandomState(seed)
+    keys = sorted(updates[0].keys())
+    flat = [torch.cat([u[k].reshape(-1) for k in keys]) for u in updates]
+
+    survivors = list(range(n))
+    for _ in range(max(1, num_iter)):
+        dim = flat[0].numel()
+        d = min(sub_dim or dim, dim)
+        cols = rng.choice(dim, size=d, replace=False)
+        P = torch.stack([f[cols] for f in flat])          # (n, d)
+
+        # 谱检测：中心化 + 幂迭代求 top 右奇异向量
+        mu = P.mean(0)
+        C = P - mu
+        v = rng.normal(size=d).astype(np.float32)
+        v = torch.tensor(v / np.linalg.norm(v))
+        for _ in range(20):
+            v = C.T @ (C @ v)
+            nv = torch.norm(v)
+            if nv < 1e-12:
+                break
+            v = v / nv
+        scores = (C @ v) ** 2                             # 离群得分
+        order = torch.argsort(scores, descending=True)
+
+        b = num_byzantine if num_byzantine is not None else max(1, int(round(trim_ratio * n)))
+        removed = set(order[:min(b, len(survivors) - 1)].tolist())
+        survivors = [i for i in survivors if i not in removed]
+
+    # 聚类：k-means (k=2) 取直径较小的簇
+    S = torch.stack([flat[i] for i in survivors])
+    if len(survivors) <= 2:
+        chosen = survivors
+    else:
+        c0 = S[rng.randint(len(S))]
+        d2 = ((S - c0) ** 2).sum(1)
+        c1 = S[int(torch.argmax(d2))]
+        for _ in range(20):
+            dist = torch.stack([((S - c0) ** 2).sum(1), ((S - c1) ** 2).sum(1)])
+            lab = dist.argmin(0)
+            new_c0 = S[lab == 0].mean(0) if (lab == 0).any() else c0
+            new_c1 = S[lab == 1].mean(0) if (lab == 1).any() else c1
+            if torch.allclose(new_c0, c0, atol=1e-7) and torch.allclose(new_c1, c1, atol=1e-7):
+                break
+            c0, c1 = new_c0, new_c1
+        members = {0: S[lab == 0], 1: S[lab == 1]}
+        def diameter(m):
+            return float(((m[:, None, :] - m[None, :, :]) ** 2).sum(-1).max()) if len(m) > 1 else 0.0
+        chosen_idx = 0 if diameter(members[0]) <= diameter(members[1]) else 1
+        chosen = [survivors[i] for i in torch.nonzero(lab == chosen_idx).flatten().tolist()]
+
+    # 选中簇 trimmed mean
+    t = max(0, min(int(round(trim_ratio * len(chosen))), len(chosen) // 2))
+    ratio = t / len(chosen) if chosen else 0.0
+    agg = trimmed_mean_aggregate([updates[i] for i in chosen], trim_ratio=ratio)
+    return agg
+
+
+def centered_clipping_aggregate(updates: List[Dict[str, torch.Tensor]],
+                                num_iter: int = 3,
+                                tau_factor: float = 1.3) -> Dict[str, torch.Tensor]:
+    """
+    Centered Clipping (Karimireddy et al., ICML 2021)
+    —— PPBR 论文对比基线之一。
+
+    迭代围绕动量中心裁剪：
+        v ← v + (1/n) Σ_i clip_τ(u_i − v)，  clip_τ(x) = x·min(1, τ/‖x‖)
+        τ = tau_factor · max_i ‖u_i‖
+    对合谋攻击（ALIE/IPM）的鲁棒性显著优于朴素 clipping。
+    """
+    n = len(updates)
+    if n == 0:
+        raise ValueError("CenteredClipping: 没有可聚合的更新")
+
+    keys = sorted(updates[0].keys())
+    norms = [float(np.sqrt(sum(u[k].double().pow(2).sum().item() for k in keys)))
+             for u in updates]
+    tau = tau_factor * max(norms)
+
+    v = {k: torch.zeros_like(updates[0][k], dtype=torch.float64) for k in keys}
+    for _ in range(max(1, num_iter)):
+        delta = {k: torch.zeros_like(v[k]) for k in keys}
+        for u in updates:
+            r = {k: u[k].double() - v[k] for k in keys}
+            rnorm = float(np.sqrt(sum(x.pow(2).sum().item() for x in r.values())))
+            c = min(1.0, tau / max(rnorm, 1e-12))
+            for k in keys:
+                delta[k] += c * r[k]
+        for k in keys:
+            v[k] += delta[k] / n
+
+    return {k: v[k].to(updates[0][k].dtype) for k in keys}

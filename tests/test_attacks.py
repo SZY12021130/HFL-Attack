@@ -101,6 +101,7 @@ EXPECTED_ATTACKS = [
     "model:alie",
     "model:min_max",
     "model:min_sum",
+    "model:ipm",
     # 系统攻击
     "system:free_riding_zeros",
     "system:free_riding_previous",

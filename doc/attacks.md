@@ -1,7 +1,7 @@
 # HFL-Attack 攻击库说明文档
 
 > 位置：`doc/attacks.md`  
-> 本文汇总 `hfl_attacks/` 攻击包中四类 24 个攻击的来源、原理与代码结构，并说明评价指标与当前全量实验配置。
+> 本文汇总 `hfl_attacks/` 攻击包中四类 25 个攻击的来源、原理与代码结构，并说明评价指标与当前全量实验配置。
 
 ---
 
@@ -51,7 +51,7 @@ configs/config.yaml ── attack 段（唯一攻击配置源）
         │  attack.enabled=false → 正常 CKKS+FedAvg，代码路径与无攻击完全一致
         │  attack.enabled=true  → main.py 按 attack.name 从 ATTACK_REGISTRY 实例化
         ▼
-hfl_attacks/（攻击实现库，24 个注册攻击）
+hfl_attacks/（攻击实现库，25 个注册攻击）
         │  数据投毒 data:*   → 初始化时替换恶意客户端 train_loader
         │  模型投毒 model:*  → 每轮在明文域篡改恶意客户端更新
         │  系统攻击 system:* → 每轮篡改更新 + DoS 类按 participates() 剔除掉线客户端
@@ -114,7 +114,7 @@ ckks_fed/defenses/（防御：median / krum / trimmed_mean 等）
 
 ---
 
-## 3. 模型投毒攻击（9 个）
+## 3. 模型投毒攻击（10 个）
 
 实现目录：`hfl_attacks/model_poisoning/`
 
@@ -146,6 +146,16 @@ ckks_fed/defenses/（防御：median / krum / trimmed_mean 等）
   - **Min-Sum**：最小化所有诚实更新到恶意更新的总距离之和，使恶意更新“挤进”诚实簇的中心。
 - **代码文件**：`optimization_attacks.py`
 - **依赖**：需要合谋上下文 `context.all_updates`。
+
+### 3.4 IPM 内积操纵合谋攻击 — `model:ipm`
+
+- **出处**：Xie et al., *Fall of Empires: Breaking Byzantine-tolerant SGD by Inner Product Manipulation*, USENIX Security 2021；也是 PPBR 论文（He 等, IEEE TMC 2026）评测的 6 种攻击之一。
+- **原理**：β 个合谋拜占庭客户端知道良性更新均值时，集体提交
+  `Δ_mal = −ξ/(n−β)·Σ_benign Δ_j`。恶意更新与良性均值内积为负（方向反转）；
+  当 ξ=(n−β)/β 时全体更新代数和为零——梯度下降被完全抵消。不依赖大幅值，
+  可绕过基于范数的过滤，需靠方向性特征（如 PPBR 的符号统计聚类）检测。
+- **代码文件**：`ipm.py`
+- **依赖**：需要合谋上下文 `context.all_updates` + `context.malicious_indices`。
 
 ---
 
