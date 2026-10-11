@@ -30,6 +30,10 @@ class FederatedClient:
         self.train_loader = train_loader
         self.config = config
         self.device = device
+        # 轨道标记："ckks"（默认，全局投票/TopK 路线）| "ppbr"（PPBR 协议路线）。
+        # main.py 在 ppbr.enabled=true 时把所有客户端置为 "ppbr"，
+        # 用于打印与残差逻辑区分（PPBR 用动量，无 PTopk 残差）。
+        self.track = "ckks"
         
         self.num_epochs = config['system']['num_epochs']
         self.learning_rate = config['system']['learning_rate']
@@ -109,7 +113,11 @@ class FederatedClient:
         """
         标准路径下：客户端本次被选中时，若距离上次训练有 gap>1 轮，
         则按 stale_gamma^(gap-1) 衰减本地残差累加器。
+        PPBR 轨道不适用（PPBR 用客户端动量 m←φ·m+(1−φ)·Δ，无 TopK 残差），
+        直接返回。
         """
+        if getattr(self, 'track', 'ckks') == 'ppbr':
+            return
         if (self.ckks_manager is not None and
             hasattr(self.ckks_manager, 'ptopk') and
             self.ckks_manager.ptopk.client_residual_enabled):
@@ -220,7 +228,14 @@ class FederatedClient:
         
         new_params = self.get_model_params()
         upload_difference = self.config['system'].get('upload_difference', True)
-        if upload_difference:
+        if getattr(self, 'track', 'ckks') == 'ppbr':
+            # PPBR 轨道：训练产物仍是 Δ，但线上上传的是 PPBR 协议消息——
+            # [x]_A（云公钥加密的噪声）+ z = m' + SA 成对/自负载掩码
+            # （m' = m − x，m 为客户端动量）。打印按线上实际传输描述。
+            model_update = {name: new_params[name] - old_params[name]
+                            for name in old_params}
+            mode_str = "PPBR: Δ→动量m' + [x]_A + SAz"
+        elif upload_difference:
             model_update = {name: new_params[name] - old_params[name] for name in old_params}
             mode_str = "差值"
         else:

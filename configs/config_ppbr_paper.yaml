@@ -342,4 +342,14 @@ output:
   results_dir: "./results"          # 实验结果（metrics.json, report.md）保存目录
   model_dir: "./history_models"     # 每轮模型 checkpoint 保存目录
   viz_dir: "./visualization"        # 可视化图表保存目录
-  save_interval: 999                # 每 N 轮保存一次模型；999 = 仅保存最终模型
+  save_interval: 10                 # 每 N 轮保存模型+检查点+指标（崩溃最多损失 N 轮；
+                                    # PPBR 检查点含全局模型/客户端动量/rng/指标，
+                                    # 配合下方 resume 段可续跑）
+
+# ----------------------------------------------------------------------------
+# 崩溃续跑（可选）：把 enabled 置 true 并指向某次实验的输出目录
+#   （含 checkpoint_round_*.pt），将从最新检查点继续训练。
+# ----------------------------------------------------------------------------
+resume:
+  enabled: false
+  from: ""                          # 例: "results/experiment_20261011_213140_mnist"

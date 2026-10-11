@@ -9,6 +9,10 @@ import os
 # 触发 OMP Error #15 直接 abort 进程。必须在任何 OpenMP 运行库加载前设置。
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
+import faulthandler
+# 原生段错误/外部终止时把 Python 栈打到 stderr，便于诊断长时运行的偶发崩溃
+faulthandler.enable()
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -307,6 +311,9 @@ class CKKSFedExperiment:
                        f"φ={c.momentum_phi} ζ={c.global_zeta}  |  "
                        f"β={'已知' if c.beta_known else '未知'}"),
             ], indent=1)
+            # 双轨标记：客户端打印与 PTopk 残差逻辑按 PPBR 语义走
+            for c in self.clients:
+                c.track = "ppbr"
 
         # 层次联邦学习（云-边-端）：enabled 时创建边缘层
         self.hierarchy = None
@@ -692,6 +699,20 @@ class CKKSFedExperiment:
             m_a = self.ppbr.run_round(round_num, updates_by_cid, groups,
                                       num_edges=self.hierarchy.num_edges)
             st = self.ppbr.last_stats.get('edges', {})
+            # PPBR 线上传输审计（块数）：累积进 metrics，供最终汇总打印
+            wire = self.ppbr.last_wire
+            self.metrics.record('ppbr_client_x_blocks',
+                                wire.get('client_x_blocks', 0))
+            self.metrics.record('ppbr_edge_xsum_blocks',
+                                wire.get('edge_xsum_blocks', 0))
+            self.metrics.record('ppbr_edge_2mp_blocks',
+                                wire.get('edge_2mp_blocks', 0))
+            self.metrics.record('ppbr_norm_products',
+                                wire.get('norm_products', 0))
+            self.metrics.record('ppbr_sa_early_dropped',
+                                wire.get('sa_early_dropped', 0))
+            self.metrics.record('ppbr_sa_late_dropped',
+                                wire.get('sa_late_dropped', 0))
             tag_info(LogTag.ATTACK,
                      f"round {round_num + 1}: PPBR 云筛选 "
                      f"edges={sorted(st.get('trusted', []))} "
@@ -745,6 +766,8 @@ class CKKSFedExperiment:
             实验结果
         """
         upload_mode = "Δ" if self.config['system'].get('upload_difference', True) else "Full"
+        if self.ppbr is not None:
+            upload_mode = "PPBR 协议消息（[x]_A + SAz）"
         blank_line()
         banner("Experiment Start", width=72)
         kv("Mode", "PPBR" if self.ppbr is not None else "Encrypted", indent=1)
@@ -758,21 +781,42 @@ class CKKSFedExperiment:
         round_fn = (self.run_round_ppbr if self.ppbr is not None
                     else self.run_round_encrypted)
 
+        # 崩溃续跑：从检查点恢复全局模型/PPBR 动量/指标，跳过已完成轮次
+        self._resume_round = 0
+        self._load_resume_state()
+        start_round = self._resume_round
+        if start_round >= num_rounds:
+            tag_warn(LogTag.SUMMARY,
+                     f"resume: 检查点已完成 {start_round} 轮 ≥ 目标 {num_rounds} 轮，"
+                     f"无需训练")
+
         key_dist_time = 0.0
         self.metrics.record('key_distribution_time', key_dist_time)
         num_clients = self.config['system']['num_clients']
-        key_size_per_client = self.ckks_manager.get_key_distribution_size()
-        self.metrics.record('key_distribution_cost', key_size_per_client * num_clients)
-        tag_info(LogTag.INIT, "Unified CKKS key distributed to all clients")
+        if self.ppbr is None:
+            key_size_per_client = self.ckks_manager.get_key_distribution_size()
+            self.metrics.record('key_distribution_cost', key_size_per_client * num_clients)
+            tag_info(LogTag.INIT, "Unified CKKS key distributed to all clients")
+        else:
+            # PPBR 轨道：云公钥 pk_A 随 w_a 广播，边缘公钥注册到云，
+            # SA 密钥每轮临时生成——无统一密钥分发环节
+            self.metrics.record('key_distribution_cost', 0.0)
+            tag_info(LogTag.INIT,
+                     "PPBR: pk_A 随全局模型广播，边缘公钥注册到云，"
+                     "SA 密钥每轮临时生成（无统一密钥分发）")
 
         try:
-            for round_num in range(num_rounds):
+            for round_num in range(start_round, num_rounds):
                 result = round_fn(round_num)
                 results.append(result)
 
-                # 每N轮保存一次模型
+                # 每N轮保存一次模型；999 = 仅保存最终模型
                 if (round_num + 1) % self.config['output']['save_interval'] == 0:
                     self._save_model(round_num + 1)
+                    # 周期检查点 + 指标落盘：原生崩溃（绕过 try/finally）时
+                    # 最多损失 save_interval 轮
+                    self._save_checkpoint(round_num + 1)
+                    self._save_results()
         except KeyboardInterrupt:
             tag_warn(LogTag.SUMMARY, "实验被用户中断")
         except Exception as e:
@@ -786,27 +830,42 @@ class CKKSFedExperiment:
                 self._save_model(len(results))
             tag_info(LogTag.SUMMARY, f"实验结果已保存至: {self.output_dir}")
 
-        # 终端打印客户端参与统计（表格形式）
-        blank_line()
-        banner("Client Participation", width=72)
-        headers = ["Client", "Participated", "Total CTs"]
-        rows = []
-        for cid in sorted(self.client_participation.keys()):
-            ct_count = self.client_total_ciphertexts.get(cid, 0)
-            rows.append([cid, self.client_participation[cid], ct_count])
-        table(headers, rows, col_widths=[8, 14, 12])
+        # 终端打印：CKKS 轨道打客户端参与/密文统计；PPBR 轨道打线上传输审计
+        mm = self.metrics.get_metrics()
+        if self.ppbr is not None:
+            blank_line()
+            banner("PPBR Wire Statistics", width=72)
 
-        blank_line()
-        section("Communication & Ciphertext Formulas", emoji="📐")
-        tree([
-            "plaintext_size  = Σ(v.numel() × 4)",
-            "ciphertext_size = Σ(len(ct.serialize()))",
-            "num_ciphertexts = Σ(len(v) for v in encrypted_update.values())",
-            "upload_cost     = Σ(ciphertext_size of selected)",
-            "download_cost   = global_model_size × 4 × num_selected",
-            "total_comm      = upload_cost + download_cost",
-            "expansion_ratio = total_ciphertext_size / total_plaintext_size",
-        ], indent=1)
+            def _sum(key: str) -> int:
+                return int(sum(mm.get(key, [])))
+
+            kv("客户端→边缘 [x_{i,j}]_A 密文块", _sum('ppbr_client_x_blocks'), indent=1)
+            kv("边缘→云 [x_i]_A 密文块", _sum('ppbr_edge_xsum_blocks'), indent=1)
+            kv("边缘→云 [2m'_i]_{Ei} 密文块", _sum('ppbr_edge_2mp_blocks'), indent=1)
+            kv("云→边缘盲化乘积密文块", _sum('ppbr_norm_products'), indent=1)
+            kv("SA early 掉线（输入不计入）", _sum('ppbr_sa_early_dropped'), indent=1)
+            kv("SA late 掉线（输入仍计入）", _sum('ppbr_sa_late_dropped'), indent=1)
+        else:
+            blank_line()
+            banner("Client Participation", width=72)
+            headers = ["Client", "Participated", "Total CTs"]
+            rows = []
+            for cid in sorted(self.client_participation.keys()):
+                ct_count = self.client_total_ciphertexts.get(cid, 0)
+                rows.append([cid, self.client_participation[cid], ct_count])
+            table(headers, rows, col_widths=[8, 14, 12])
+
+            blank_line()
+            section("Communication & Ciphertext Formulas", emoji="📐")
+            tree([
+                "plaintext_size  = Σ(v.numel() × 4)",
+                "ciphertext_size = Σ(len(ct.serialize()))",
+                "num_ciphertexts = Σ(len(v) for v in encrypted_update.values())",
+                "upload_cost     = Σ(ciphertext_size of selected)",
+                "download_cost   = global_model_size × 4 × num_selected",
+                "total_comm      = upload_cost + download_cost",
+                "expansion_ratio = total_ciphertext_size / total_plaintext_size",
+            ], indent=1)
 
         blank_line()
         banner("Experiment Complete", width=72)
@@ -892,6 +951,53 @@ class CKKSFedExperiment:
         model_path = os.path.join(model_dir, f"model_round_{round_num}.pth")
         torch.save(self.server.model.state_dict(), model_path)
         logger.info(f"明文模型已保存: {model_path}")
+
+    def _save_checkpoint(self, round_num: int):
+        """周期检查点：全局模型 + PPBR 动量/随机状态 + 指标（崩溃续跑用）。
+
+        保存 output/checkpoint_round_{N}.pt，N = 已完成轮数。仅 PPBR 轨道
+        需要（动量与 rng 是跨轮状态）；CKKS 轨道每轮无状态，模型即全部。
+        """
+        if self.ppbr is None:
+            return
+        ckpt = {
+            'round': round_num,
+            'model': {k: v.detach().cpu() for k, v in
+                      self.server.model.state_dict().items()},
+            'ppbr_momenta': self.ppbr.controller.momenta,
+            'ppbr_rng_state': self.ppbr.rng.get_state(),
+            'metrics': self.metrics.get_metrics(),
+        }
+        path = os.path.join(self.output_dir, f"checkpoint_round_{round_num}.pt")
+        torch.save(ckpt, path)
+        logger.info(f"检查点已保存（含 PPBR 动量/rng/指标）: {path}")
+
+    def _load_resume_state(self) -> None:
+        """从 config.resume.from 目录加载最新检查点并恢复跨轮状态。"""
+        resume_cfg = self.config.get('resume') or {}
+        src = resume_cfg.get('from')
+        if not resume_cfg.get('enabled', False) or not src:
+            return
+        if self.ppbr is None:
+            tag_warn(LogTag.INIT, "resume: 仅 PPBR 轨道支持检查点续跑，忽略")
+            return
+        ckpts = [f for f in os.listdir(src)
+                 if f.startswith('checkpoint_round_') and f.endswith('.pt')]
+        if not ckpts:
+            tag_warn(LogTag.INIT, f"resume: {src} 中无检查点，从头训练")
+            return
+        latest = max(ckpts, key=lambda f: int(
+            f[len('checkpoint_round_'):-len('.pt')]))
+        ckpt = torch.load(os.path.join(src, latest),
+                          map_location='cpu', weights_only=False)
+        self.server.model.load_state_dict(ckpt['model'])
+        self.ppbr.controller.momenta = ckpt['ppbr_momenta']
+        self.ppbr.rng.set_state(ckpt['ppbr_rng_state'])
+        self.metrics.metrics = ckpt['metrics']
+        self._resume_round = int(ckpt['round'])
+        tag_info(LogTag.INIT,
+                 f"resume: 从 {src} 的 {latest} 续跑"
+                 f"（已完成 {self._resume_round} 轮，动量/rng/指标已恢复）")
 
     def _save_results(self):
         """保存实验结果（JSON + Markdown报告）"""
@@ -1011,20 +1117,36 @@ class CKKSFedExperiment:
 
         lines.append(f"")
 
-        # 客户端参与统计
-        lines.append(f"## 3. Client Participation & Statistics / 客户端参与统计与详情")
-        lines.append(f"")
-        lines.append(f"| CID | Part / 参与轮次 | CTs / 密文数 | DL BW / 下行带宽 | UL BW / 上行带宽 |")
-        lines.append(f"|-----|----------------|--------------|------------------|------------------|")
-        for cid in sorted(self.client_participation.keys()):
-            ct_count = self.client_total_ciphertexts.get(cid, 0) if is_encrypted else 0
-            dl_bw = "-"
-            ul_bw = "-"
-            if self.bandwidth_simulator is not None:
-                dl_bw = f"{self.bandwidth_simulator.get_dl_bw_kbps(cid):.0f} kbps"
-                ul_bw = f"{self.bandwidth_simulator.get_ul_bw_kbps(cid):.0f} kbps"
-            lines.append(f"| {cid} | {self.client_participation[cid]} | {ct_count} | {dl_bw} | {ul_bw} |")
-        lines.append(f"")
+        # 客户端参与统计 / PPBR 线上传输审计
+        if getattr(self, 'ppbr', None) is not None:
+            lines.append(f"## 3. PPBR Wire Statistics / PPBR 线上传输审计（密文块数）")
+            lines.append(f"")
+            lines.append(f"| Round / 轮次 | 客户端→边缘 [x]_A 块 | 边缘→云 [x_i]_A 块 | "
+                         f"边缘→云 [2m'_i] 块 | 云→边缘盲化乘积块 | SA early 掉线 | SA late 掉线 |")
+            lines.append(f"|---|---|---|---|---|---|---|")
+            for r in range(num_rounds):
+                def _at(k):
+                    v = m.get(k, [])
+                    return v[r] if r < len(v) else 0
+                lines.append(
+                    f"| {r+1} | {_at('ppbr_client_x_blocks')} | {_at('ppbr_edge_xsum_blocks')} | "
+                    f"{_at('ppbr_edge_2mp_blocks')} | {_at('ppbr_norm_products')} | "
+                    f"{_at('ppbr_sa_early_dropped')} | {_at('ppbr_sa_late_dropped')} |")
+            lines.append(f"")
+        else:
+            lines.append(f"## 3. Client Participation & Statistics / 客户端参与统计与详情")
+            lines.append(f"")
+            lines.append(f"| CID | Part / 参与轮次 | CTs / 密文数 | DL BW / 下行带宽 | UL BW / 上行带宽 |")
+            lines.append(f"|-----|----------------|--------------|------------------|------------------|")
+            for cid in sorted(self.client_participation.keys()):
+                ct_count = self.client_total_ciphertexts.get(cid, 0) if is_encrypted else 0
+                dl_bw = "-"
+                ul_bw = "-"
+                if self.bandwidth_simulator is not None:
+                    dl_bw = f"{self.bandwidth_simulator.get_dl_bw_kbps(cid):.0f} kbps"
+                    ul_bw = f"{self.bandwidth_simulator.get_ul_bw_kbps(cid):.0f} kbps"
+                lines.append(f"| {cid} | {self.client_participation[cid]} | {ct_count} | {dl_bw} | {ul_bw} |")
+            lines.append(f"")
 
         # 每轮详细结果
         lines.append(f"## 4. Per-Round Results / 每轮详细结果")
@@ -1076,7 +1198,13 @@ class CKKSFedExperiment:
         lines.append(f"")
         lines.append(f"| # | Metric / 指标 | Formula / 公式 |")
         lines.append(f"|---|---------------|----------------|")
-        if is_encrypted:
+        if getattr(self, 'ppbr', None) is not None:
+            lines.append(f"| 1 | 客户端→边缘上传 / Client→Edge | `[x_{i,j}]_A`（云公钥分块密文）+ `z`（SA 掩码） |")
+            lines.append(f"| 2 | 边缘→云上传 / Edge→Cloud | `[x_i]_A = Σ_j [x_{i,j}]_A`、`[2m'_i]_{{Ei}}`（边缘公钥，云解不开） |")
+            lines.append(f"| 3 | 云→边缘下发 / Cloud→Edge | `[v]_{{Ei}} = [2m'_i]_{{Ei}} ∘ (r_i·x_i)` 盲化乘积密文 |")
+            lines.append(f"| 4 | SA 掉线恢复 / Dropout recovery | Shamir (t,n−1) 份额重建 DH 私钥与自负载种子（early 不计入 / late 计入） |")
+            lines.append(f"| 5 | 全局更新 / Global update | `w_a ← w_a + ζ·m_a`，`m_a` 经去噪 `Σ x''_i(m'_i+x_i)/l'` |")
+        elif is_encrypted:
             lines.append(f"| 1 | Plaintext Size / 明文大小 | `sum(v.numel() * 4 for v in model_update.values())` |")
             lines.append(f"| 2 | Ciphertext Size / 密文大小 | `sum(len(ct.serialize()) for ct in encrypted_update.values())` |")
             lines.append(f"| 3 | Ciphertext Blocks / 密文块数 | `sum(len(v) for v in encrypted_update.values())` |")
