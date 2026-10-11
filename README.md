@@ -192,28 +192,28 @@ CKKSFedExperiment.__init__()
 
 #### PPBR 一轮完整实体时序（云 / 边缘 / 客户端）
 
-```
- 云 A                              边缘 A_i                          客户端 u_{i,j}
-  │                                  │                                  │
-  │─(0) 广播 w_a、坐标子集 G、pk_A、CLDP 参数───────────────────────────>│
-  │                                  │<─(1) 本地训练 Δ；符号元组+CLDP 扰动─│
-  │                                  │─(2) trimmed k-means 过滤，得可信集──>│
-  │                                  │<─(3) m'=m−x；[x]_A；SA 掩码 z ──────│
-  │                                  │    （只有可信客户端参与重传输；SA 为    │
-  │                                  │      真实 X25519+HKDF 协商 + Shamir   │
-  │                                  │      份额，见 doc/ppbr.md §3.2）       │
-  │                                  │─(4) SA 聚合掩码相消得 m'_i ────────>│
-  │                                  │    同态求和 [x_i]_A=Σ[x_{i,j}]_A     │
-  │<─(5) [x_i]_A、[2m'_i]_{Ei} ─────│    [2m'_i]_{Ei}（边缘公钥，云解不开） │
-  │─(6) 解密 x_i；盲化乘 [2m']∘(r_i·x)                                │
-  │   （云只见盲化点积）              │                                  │
-  │                                  │─(7) 解密求和 S_i=2r_i(m'·x)；‖m'‖² ─>│
-  │─(8) ‖m_i‖²=‖m'‖²+‖x‖²+S_i/r_i；M=median；[M−θ,M+θ]+l' 筛出 A^(T)；x''_i
-  │                                  │                                  │
-  │─(9) 发 t_i=R·x''_i（边缘看是随机数）────────────────────────────────>│
-  │                                  │─(10) u_i=t_i·m'_i + 边缘级 SA 掩码 ─>│
-  │─(11) 掩码相消、除回 R；denoise +Σx''_i·x_i/l' = m_a ────────────────│
-  │─(12) w_a ← w_a + ζ·m_a；回到 (0) 广播 ────────────────────────────>│
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 云 A
+    participant E as 边缘 A_i
+    participant U as 客户端 u_{i,j}
+
+    C->>U: (0) 广播 w_a、坐标子集 G、pk_A、CLDP 参数
+    U->>E: (1) 本地训练 Δ；符号元组 + CLDP 扰动（3 维带噪元组）
+    Note over E: (2) trimmed k-means 过滤，得可信集 U_i^(T)
+    U->>E: (3) m' = m − x；[x]_A（云公钥）；SA 掩码 z（仅可信客户端参与重传输）
+    Note over U,E: SA 为真实 X25519+HKDF 协商 + Shamir 份额（doc/ppbr.md §3.2）
+    Note over E: (4) SA 求和掩码相消得 m'_i；同态求和 [x_i]_A = Σ[x_{i,j}]_A
+    E->>C: (5) [x_i]_A、[2m'_i]_{Ei}（边缘公钥加密，云解不开）
+    Note over C: (6) 解密 x_i；取随机 r_i 算盲化乘积密文 [v]_{Ei} = [2m'_i]∘(r_i·x_i)
+    C->>E: [v]_{Ei}（云只见盲化点积）
+    E->>C: (7) S_i = 2r_i(m'_i·x_i)、‖m'_i‖²
+    Note over C: (8) ‖m_i‖² = ‖m'‖²+‖x‖²+S_i/r_i；M = median；[M−θ, M+θ] 带 + l' 筛出 A^(T)；x''_i = min(1, M/‖m_i‖)
+    C->>E: (9) t_i = R·x''_i（边缘看是随机数）
+    E->>C: (10) u_i = t_i·m'_i + 边缘级 SA 掩码
+    Note over C: (11) 掩码相消、除回 R；denoise + Σx''_i·x_i / l' = m_a
+    C->>U: (12) w_a ← w_a + ζ·m_a；回到 (0) 广播
 ```
 
 要点：客户端筛选（步骤 1-2）发生在重密文传输（步骤 3）**之前**，边缘筛选
