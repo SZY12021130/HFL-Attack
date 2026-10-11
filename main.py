@@ -996,7 +996,9 @@ class CKKSFedExperiment:
         ckpt = torch.load(os.path.join(src, latest),
                           map_location='cpu', weights_only=False)
         self.server.model.load_state_dict(ckpt['model'])
-        self.ppbr.controller.momenta = ckpt['ppbr_momenta']
+        self.ppbr.controller.momenta = {
+            cid: {k: v.to(self.device) for k, v in m.items()}
+            for cid, m in ckpt['ppbr_momenta'].items()}
         self.ppbr.rng.set_state(ckpt['ppbr_rng_state'])
         self.metrics.metrics = ckpt['metrics']
         self._resume_round = int(ckpt['round'])
