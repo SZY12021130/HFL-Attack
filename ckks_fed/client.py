@@ -284,17 +284,9 @@ class FederatedClient:
     def encrypt_update(self, model_update: Dict[str, torch.Tensor], ckks_manager, round_num: int = 0,
                         global_mask=None) -> Dict[str, List]:
         start_time = time.time()
-        # ---- Warmup 支持：前 N 轮跳过客户端稀疏化（可插拔）----
-        ckks_cfg = self.config.get('ckks', {})
-        sparsity_cfg = ckks_cfg.get('sparsification', {})
-        use_warmup = sparsity_cfg.get('use_warmup_skip_sparse', False)
-        warmup_rounds = sparsity_cfg.get('warmup_rounds', 0)
-        skip_sparse = use_warmup and (round_num < warmup_rounds)
-        if skip_sparse:
-            tag_info(LogTag.CLIENT, f"#{self.client_id} warmup round {round_num} | skip sparsification")
+        # 客户端始终启用稀疏化；skip_sparsification 仅服务器加密完整全局模型时使用
         encrypted_update = ckks_manager.encrypt_model_update(
             model_update, round_num=round_num,
-            skip_sparsification=skip_sparse,
             client_id=self.client_id,
             global_mask=global_mask,
         )

@@ -117,10 +117,6 @@ ckks:
     #   max_abs : 最大绝对值
     scoring_method: "l2_norm"
 
-    # warmup 期间跳过客户端稀疏化（false = 从一开始就启用）
-    use_warmup_skip_sparse: false
-    warmup_rounds: 2
-
   # --------------------------------------------------------------------------
   # ptopk: Packed TopK with Error Feedback（残差补偿，基于 STC 思想）
   #   客户端维护明文残差累加器，每轮上传前先把残差叠加到当前梯度上再 TopK，
