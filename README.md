@@ -49,7 +49,9 @@ HFL-Attack/
 │   ├── sign_stats.py          # 算法2a: 符号统计元组 + 坐标子集
 │   ├── clustering.py          # 算法2c: trimmed k-means 聚类过滤
 │   ├── controller.py          # 数学机制: 动量/边缘均值/范数筛选裁剪
-│   ├── crypto.py              # 传输层: PLHE 分块加解密 + SA 成对掩码
+│   ├── crypto.py              # 传输层: PLHE 分块加解密 + sim 模式种子掩码
+│   ├── sa.py                  # 真实 SA (Bonawitz'17): X25519+HKDF 协商、
+│   │                          #   Shamir 掉线恢复（见 doc/ppbr.md §3.2）
 │   └── protocol.py            # PPBRProtocol: 云/边缘/客户端完整协议时序
 ├── configs/
 │   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR)
@@ -197,7 +199,9 @@ CKKSFedExperiment.__init__()
   │                                  │<─(1) 本地训练 Δ；符号元组+CLDP 扰动─│
   │                                  │─(2) trimmed k-means 过滤，得可信集──>│
   │                                  │<─(3) m'=m−x；[x]_A；SA 掩码 z ──────│
-  │                                  │    （只有可信客户端参与重传输）        │
+  │                                  │    （只有可信客户端参与重传输；SA 为    │
+  │                                  │      真实 X25519+HKDF 协商 + Shamir   │
+  │                                  │      份额，见 doc/ppbr.md §3.2）       │
   │                                  │─(4) SA 聚合掩码相消得 m'_i ────────>│
   │                                  │    同态求和 [x_i]_A=Σ[x_{i,j}]_A     │
   │<─(5) [x_i]_A、[2m'_i]_{Ei} ─────│    [2m'_i]_{Ei}（边缘公钥，云解不开） │
@@ -222,7 +226,7 @@ CKKSFedExperiment.__init__()
 |------|------|-----------|------|
 | PLHE 云密钥对 (pk_A, sk_A) | 1 对，仅云持有 | `PPBRKeyContext`（cloud_ctx，含 sk_A） | ✅ |
 | PLHE 边缘密钥对 (pk_{A_i}, sk_{A_i}) | l 对，边缘 A_i 各自持有 | 每边缘一个 `PPBRKeyContext`（edge_ctxs，私钥边缘自持，公钥注册到云） | ✅ |
-| SA 客户端密钥 (sk_i, pk_i, b_i) | 每客户端一组（DH 协商 + Shamir 分片 b_i） | **仿真抽象**：成对掩码种子由 `SHA256("ppbr-dh-<id>-<id>-<round>")` 模拟 DH 输出，无真实客户端密钥；b_i 的 Shamir 掉线恢复未实现（单进程仿真无掉线，见 doc/ppbr.md §4.7） | ⚠️ 机制保留、密钥协商抽象 |
+| SA 客户端密钥 (sk_i, pk_i, b_i) | 每客户端一组（DH 协商 + Shamir 分片 b_i） | **真实实现**（`ppbr/sa.py`）：每轮临时 X25519 密钥对，成对种子=HKDF(DH(sk_i,pk_j))；sk_i 与 b_i 均 Shamir (t,n−1) 分片，early/late 两阶段掉线恢复（私钥重建路径，见 doc/ppbr.md §3.2）；`sa_key_exchange: sim` 退回种子模拟 | ✅ |
 | CLDP 参数 (ε_χ, L, L') | 公开 | `PPBRConfig` | ✅ |
 
 差异说明：范数盲化中论文在 [·]_{A_i} 密文上同态算出 ‖m'‖² 并以 (x'_i)² 盲化
@@ -243,6 +247,7 @@ CKKSFedExperiment.__init__()
 | 层次架构（云-边-端 / UAV） | `ckks_fed/hierarchy.py` |
 | PPBR 拜占庭鲁棒（算法 2/3/4/5 数学机制） | `ppbr/controller.py` |
 | PPBR 完整协议（PLHE + SA 掩码 + 范数盲化） | `ppbr/protocol.py` + `ppbr/crypto.py` |
+| PPBR 真实 SA（X25519 协商 / Shamir 掉线恢复） | `ppbr/sa.py` |
 | PPBR 阅读笔记（论文全文技术细节） | `paperlist/ppbr_notes.md` |
 | 攻击接口 / 注册表 | `hfl_attacks/base.py` (`ATTACK_REGISTRY`) |
 | 攻击评估 CLI | `hfl_attacks/runner.py` |

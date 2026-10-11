@@ -269,6 +269,12 @@ ppbr:
   theta: null                     # 范数带阈值 θ（null=仅按数量 l' 过滤）
   beta_known: false               # 是否已知拜占庭比例 β
   beta: 0.3                       # 拜占庭比例（beta_known=true 时用于 l'=(1−β)l）
+  sa_key_exchange: "dh"           # SA 密钥协商："dh"=真实 X25519+HKDF + Shamir 掉线
+                                  # 恢复（Bonawitz'17，见 doc/ppbr.md §3.2）；
+                                  # "sim"=哈希种子模拟（不抗合谋，仅供对照）
+  sa_simulate_dropout_rate: 0.0   # SA 掉线仿真比例 [0,1]（仅实验用途；组<4 不触发，
+                                  # 保证幸存方 ≥ max(2,t) 使份额可恢复；early 掉线
+                                  # 输入不计入聚合，late 掉线输入仍计入）
 
 
 # ============================================================================

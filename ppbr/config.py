@@ -24,6 +24,13 @@ class PPBRConfig:
     # 灾难性抵消——固定大方差噪声会让三项 ~‖x‖² 互相抵消为 ~‖m‖²，
     # CKKS 误差直接淹没范数真值
     noise_rel: float = 0.5
+    # SA 层：密钥协商方式。"dh"=真实 X25519+HKDF（Bonawitz'17，借鉴
+    # ammartahir24/SecureAggregation 与 Flower SecAgg+）；"sim"=哈希种子
+    # 模拟 DH 输出（无密码学开销的对照模式）
+    sa_key_exchange: str = "dh"
+    # 客户端掉线仿真比例 [0,1)：>0 时随机让可信客户端在 SA 不同阶段掉线，
+    # 触发 Shamir (t,n) 份额恢复路径（Bonawitz 掉线容忍机制）
+    sa_simulate_dropout_rate: float = 0.0
     # trimmed k-means：簇数 k、取前 b 个大簇、每轮迭代剔除比例（论文 k=2, b=1）
     k: int = 2
     b: int = 1

@@ -16,12 +16,13 @@ IEEE TMC 2026），不走全局掩码投票 / TopK 稀疏化 / 单密钥 CKKS �
      比例）→ CLDP 扰动（式 2）→ 边缘只做 trimmed k-means 过滤
      （边缘唯一可见信息：3 维扰动符号元组）
   3. 可信客户端更新动量 m ← φ·m + (1−φ)·Δ（算法 3 第 1 行）
-  4. 客户端：采随机噪声 x；m' = m − x；``[x]_A`` 用云公钥加密发往边缘；
-     z = m' + 成对 SA 掩码（种子模拟 DH 协商）发往边缘
-  5. 边缘（算法 3）：SA 求和掩码相消得 n'_i·m'_i，除以 n'_i 得 m'_i
-     （边缘只见掩码态个体输入与聚合均值，见不到任一客户端明文更新）；
-     同态求和 ``[x_i]_A = Σ_j [x_{i,j}]_A``；加密 ``[2m'_i]_{Ei}``
-     （边缘私钥自持）发往云
+  4. 客户端：采相对噪声 x；m' = m − x；``[x]_A`` 用云公钥加密发往边缘；
+     z = m' + 成对 SA 掩码 + 自负载掩码 PRG(b_j) 发往边缘
+     （SA：真实 X25519+HKDF 密钥协商 + Shamir 掉线恢复，见 ppbr/sa.py；
+       sa_key_exchange="sim" 时可退回哈希种子模拟）
+  5. 边缘（算法 3）：SA 求和（掩码相消，掉线经 Shamir 份额恢复，云/边缘
+     只见聚合均值）得 m'_i；同态求和 ``[x_i]_A = Σ[x_{i,j}]_A``；
+     加密 ``[2m'_i]_{Ei}``（边缘私钥自持）发往云
   6. 云范数盲化（算法 4，两轮点积协议——TenSEAL 无 rotate，无法直接
      密文内求和，改为云/边缘协作两轮）：
        云解密 ``[x_i]_A`` 得 x_i；取随机标量 r_i，计算
@@ -41,12 +42,14 @@ IEEE TMC 2026），不走全局掩码投票 / TopK 稀疏化 / 单密钥 CKKS �
   9. 云更新 w_a ← w_a + ζ·m_a（对应论文 w ← w − ζ·m；论文 m 为梯度方向、
      本项目 m 为参数变化量方向，符号相反），回到第 0 步
 
-掉线恢复（论文的 Shamir 份额）在单进程仿真中无掉线，未实现，见
-doc/ppbr.md「后续工作」。
+SA 层（ppbr/sa.py）为 Bonawitz'17 真实实现：X25519+HKDF 成对种子、
+自负载掩码、私钥与 b 的 Shamir (t,n−1) 份额、early/late 两阶段掉线恢复；
+sa_key_exchange="sim" 退回哈希种子模拟（不抗合谋）。掉线仿真由
+sa_simulate_dropout_rate 控制（仅实验用途）。
 """
 
 import logging
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -194,31 +197,110 @@ class PPBRProtocol:
         # ---- 客户端阶段：噪声掩码 + 云公钥加密 [x]_A + SA 掩码 z ----
         # x = noise_rel·‖m‖·u/‖u‖：与动量同尺度的相对噪声（见 config.py 注释），
         # 避免范数展开式的灾难性抵消
+        use_dh = (self.cfg.sa_key_exchange == "dh")
         x: Dict[int, np.ndarray] = {}
         z: Dict[int, np.ndarray] = {}
         ct_x: Dict[int, list] = {}
+        sa_members: Dict[int, 'SAMember'] = {}
+        sa_buckets: Dict[int, 'SABucket'] = {}
+        sa_early: Dict[int, Set[int]] = {}
+        sa_late: Dict[int, Set[int]] = {}
+        shares_out: Dict[int, Dict[int, Tuple[int, int]]] = {}
+        sk_shares_out: Dict[int, Dict[int, Tuple[int, int]]] = {}
+
+        if use_dh:
+            # SA 阶段 1：真实 DH 密钥交换（公钥经边缘广播）
+            from ppbr.sa import SABucket, SAMember, sa_threshold
+            for eid, cs in groups.items():
+                present = [c for c in cs if c in m]
+                if len(present) < 2:
+                    continue  # 单客户端组无 SA 对偶方，退化为无掩码直传
+                tag = f"e{eid}"
+                bucket = SABucket(tag, round_num, sa_threshold(len(present)))
+                for c in present:
+                    mem = SAMember(c, tag, round_num, bucket.threshold)
+                    bucket.add_member(c, mem.public_key())
+                    sa_members[c] = mem
+                for c in present:
+                    sa_members[c].register_peers(bucket.pubkeys())
+                # Bonawitz 私钥备份：DH 私钥以 Shamir (t,n−1) 分片给同组其余方，
+                # 掉线方的全部成对掩码可由 ≥t 份份额重建私钥后重算扣除
+                for c in present:
+                    sk_shares_out[c] = sa_members[c].share_private_key()
+                sa_buckets[eid] = bucket
+            # 掉线仿真：半数"提交前掉线"（不发 z）、半数"提交后掉线"
+            # （发 z 但不揭示，走 Shamir 份额恢复）
+            rate = float(self.cfg.sa_simulate_dropout_rate)
+            if rate > 0.0:
+                for eid, bucket in sa_buckets.items():
+                    present = bucket.member_ids
+                    if len(present) < 4:
+                        continue  # 组太小不做掉线仿真
+                    cand = [c for c in present if self.rng.rand() < rate]
+                    max_drop = len(present) - max(2, bucket.threshold)
+                    dropped = cand[:max(0, max_drop)]
+                    n_late = len(dropped) // 2
+                    sa_late[eid] = set(dropped[:n_late])
+                    early = set(dropped[n_late:])
+                    sa_early[eid] = early
+                    for c in early:
+                        bucket.mark_early_dropout(c)
+
         for c in cids:
+            eid = edge_of[c]
+            is_early = use_dh and c in sa_early.get(eid, set())
+            if is_early:
+                continue  # 提交前掉线：不上传 z 与 [x]_A
             u = self.rng.normal(0.0, 1.0, dim)
             x[c] = self.cfg.noise_rel * float(np.linalg.norm(m[c])) * u / np.linalg.norm(u)
             mprime = m[c] - x[c]
-            masked = mprime.copy()
-            for c2 in groups.get(edge_of[c], []):
-                if c2 == c or c2 not in m:
-                    continue
-                r = prg_vector(pair_seed("dh", c, c2, round_num), dim)
-                masked += r if c < c2 else -r
-            z[c] = masked
+            if use_dh and c in sa_members:
+                # SA 阶段 2：成对掩码 + 自负载掩码 + b 的 Shamir 分片
+                z[c], shares_out[c] = sa_members[c].masked_input(mprime)
+            else:
+                masked = mprime.copy()
+                for c2 in groups.get(eid, []):
+                    if c2 == c or c2 not in m:
+                        continue
+                    r = prg_vector(pair_seed("dh", c, c2, round_num), dim)
+                    masked += r if c < c2 else -r
+                z[c] = masked
             ct_x[c] = self.cloud_ctx.encrypt_blocks(x[c])
 
         # ---- 边缘阶段（算法 3）：SA 聚合 + 同态求和 + [2m'_i]_{Ei} ----
         edge_data: Dict[int, dict] = {}
         wire = {'client_x_blocks': 0, 'edge_xsum_blocks': 0,
-                'edge_2mp_blocks': 0, 'norm_products': 0}
+                'edge_2mp_blocks': 0, 'norm_products': 0,
+                'sa_early_dropped': 0, 'sa_late_dropped': 0}
         for eid, cs in groups.items():
             present = [c for c in cs if c in z]
             if not present:
                 continue
-            mprime_i = np.sum([z[c] for c in present], axis=0) / len(present)
+            if use_dh and eid in sa_buckets:
+                # SA 聚合（含掉线修正）：总和 = Σ幸存输入（late 掉线方计入）
+                bucket = sa_buckets[eid]
+                late = sa_late.get(eid, set()) & set(present)
+                for c in present:
+                    if c in late:
+                        bucket.mark_late_dropout(c, z[c])
+                    else:
+                        bucket.submit(c, z[c])
+                survivors = [c for c in present if c not in late]
+                reveals = {c: sa_members[c].reveal_self(dim) for c in survivors}
+                # 掉线方（early∪late）的 DH 私钥由其分发、幸存方代持的 ≥t 份
+                # 份额重建；late 掉线方的自负载种子 b 同理由 ≥t 份份额重建
+                shares_sk = {d: [sk_shares_out[d][s] for s in survivors
+                                 if s in sk_shares_out.get(d, {})]
+                             for d in bucket.early_dropped | late}
+                shares_b = {d: [shares_out[d][s] for s in survivors
+                                if s in shares_out.get(d, {})] for d in late}
+                total, n_i = bucket.aggregate(reveals, shares_sk, shares_b, dim)
+                wire['sa_early_dropped'] += len(bucket.early_dropped)
+                wire['sa_late_dropped'] += len(late)
+                mprime_i = total / n_i
+            else:
+                n_i = len(present)
+                mprime_i = np.sum([z[c] for c in present], axis=0) / n_i
             ct_x_i = ct_x[present[0]]
             wire['client_x_blocks'] += sum(len(v) for c in present
                                            for v in [ct_x[c]])
@@ -229,7 +311,7 @@ class PPBRProtocol:
             wire['edge_xsum_blocks'] += len(ct_x_i)
             wire['edge_2mp_blocks'] += len(ct_2mp)
             edge_data[eid] = dict(
-                mprime=mprime_i, ct_x=ct_x_i, ct_2mp=ct_2mp, n=len(present),
+                mprime=mprime_i, ct_x=ct_x_i, ct_2mp=ct_2mp, n=n_i,
                 norm2_mp=float(mprime_i @ mprime_i), xi=None)
 
         # ---- 云范数盲化（算法 4，两轮点积协议）----
@@ -259,16 +341,36 @@ class PPBRProtocol:
 
         # ---- 盲化裁剪聚合（算法 5）----
         R = float(self.rng.uniform(1.0, 2.0))
-        agg = np.zeros(dim)
-        for eid in eids_t:
-            u = (R * clip[eid]) * edge_data[eid]['mprime']
-            for e2 in eids_t:
-                if e2 == eid:
-                    continue
-                p = prg_vector(pair_seed("edge-dh", eid, e2, round_num), dim)
-                u = u + (p if eid < e2 else -p)
-            agg += u
-        sum_mp = agg / R                        # Σ x''_i m'_i（掩码相消）
+        if use_dh and len(eids_t) >= 2:
+            # 边缘级同样走真实 SA（成员=可信边缘，聚合方=云）
+            from ppbr.sa import SABucket as _CB, SAMember as _CM, sa_threshold
+            cbucket = _CB("cloud", round_num, sa_threshold(len(eids_t)))
+            cmember = {}
+            for eid in eids_t:
+                mem = _CM(eid, "cloud", round_num, cbucket.threshold)
+                cbucket.add_member(eid, mem.public_key())
+                cmember[eid] = mem
+            for eid in eids_t:
+                cmember[eid].register_peers(cbucket.pubkeys())
+            for eid in eids_t:
+                u, _sh = cmember[eid].masked_input(
+                    (R * clip[eid]) * edge_data[eid]['mprime'])
+                cbucket.submit(eid, u)
+            # 边缘级无掉线：全员揭示自负载掩码，无份额恢复
+            total_e, _n_e = cbucket.aggregate(
+                {e: cmember[e].reveal_self(dim) for e in eids_t}, {}, {}, dim)
+            sum_mp = total_e / R            # Σ x''_i m'_i（SA 掩码相消）
+        else:
+            agg = np.zeros(dim)
+            for eid in eids_t:
+                u = (R * clip[eid]) * edge_data[eid]['mprime']
+                for e2 in eids_t:
+                    if e2 == eid:
+                        continue
+                    p = prg_vector(pair_seed("edge-dh", eid, e2, round_num), dim)
+                    u = u + (p if eid < e2 else -p)
+                agg += u
+            sum_mp = agg / R                # Σ x''_i m'_i（掩码相消）
         sum_x = np.sum([clip[e] * edge_data[e]['xi'] for e in eids_t], axis=0)
         l_prime = len(eids_t)
         m_a = (sum_mp + sum_x) / l_prime

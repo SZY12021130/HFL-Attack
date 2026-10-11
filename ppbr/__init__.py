@@ -13,7 +13,9 @@ CKKS 轨道（服务器零私钥）不变。两轨共享数据/模型/本地训�
 - ``sign_stats.py`` 符号统计元组（正/负/零号比例）
 - ``clustering.py`` trimmed k-means 边缘过滤（算法 2 c）
 - ``controller.py`` 动量 / 边缘均值 / 云范数筛选+裁剪（算法 3/4/5 的数学机制）
-- ``crypto.py``     PLHE 分块加解密 + SA 成对掩码（种子模拟 DH 协商）
+- ``crypto.py``     PLHE 分块加解密 + 模拟 DH 掩码（sa_key_exchange="sim" 时用）
+- ``sa.py``         真实 SA（Bonawitz'17）：X25519+HKDF 协商、PRG 掩码、
+                    Shamir (t,n) 份额、掉线两阶段恢复
 - ``protocol.py``   PPBRProtocol 完整协议编排（云/边缘/客户端消息时序）
 
 信任模型（与 CKKS 轨道不同，见 doc/ppbr.md）：云持 sk_A（论文原样）；
@@ -25,5 +27,7 @@ from ppbr.config import PPBRConfig
 from ppbr.controller import PPBRController
 from ppbr.crypto import PPBRKeyContext
 from ppbr.protocol import PPBRProtocol
+from ppbr.sa import SABucket, SAMember, shamir_recover, shamir_split
 
-__all__ = ['PPBRConfig', 'PPBRController', 'PPBRKeyContext', 'PPBRProtocol']
+__all__ = ['PPBRConfig', 'PPBRController', 'PPBRKeyContext', 'PPBRProtocol',
+           'SABucket', 'SAMember', 'shamir_split', 'shamir_recover']
