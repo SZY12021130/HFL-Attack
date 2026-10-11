@@ -27,11 +27,11 @@ def _loader_to_tensors(loader):
 
 
 def _tensors_to_loader(x, y, loader):
-    """保持原 loader 的 batch_size/shuffle，构造新的 DataLoader"""
+    """保持原 loader 的 batch_size/shuffle 与样本顺序，构造新的 DataLoader"""
     return DataLoader(
         TensorDataset(x, y),
         batch_size=loader.batch_size,
-        shuffle=True,
+        shuffle=getattr(loader, "shuffle", False),
         drop_last=getattr(loader, 'drop_last', False),
     )
 
