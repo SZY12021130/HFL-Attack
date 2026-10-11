@@ -301,18 +301,28 @@ class AggregationServer:
     def aggregate_encrypted_updates(self, encrypted_updates: List[Dict[str, List]],
                                     client_weights: List[float],
                                     ckks_manager,
-                                    client_upload_sizes: List[int] = None):
-        """聚合加密的模型更新（CKKS同态聚合，返回密文结果）"""
+                                    client_upload_sizes: List[int] = None,
+                                    normalize: bool = True):
+        """聚合加密的模型更新（CKKS同态聚合，返回密文结果）
+
+        Args:
+            normalize: True=扁平聚合（batch 内归一化）；False=层次聚合
+                （边缘密文已按全局权重预缩放，云只做加权和，不再归一化）
+        """
         start_time = time.time()
         if len(encrypted_updates) == 0:
             raise ValueError("加密更新列表为空")
 
-        total_weight = sum(client_weights)
-        normalized_weights = [w / total_weight for w in client_weights]
+        if normalize:
+            total_weight = sum(client_weights)
+            normalized_weights = [w / total_weight for w in client_weights]
+        else:
+            # 层次聚合：权重由上层（边缘）全局预缩放，原样使用
+            normalized_weights = list(client_weights)
         tag_info(LogTag.AGG, f"Aggregating {len(encrypted_updates)} encrypted updates...")
 
         aggregated_encrypted = ckks_manager.aggregate_encrypted_updates(
-            encrypted_updates, normalized_weights
+            encrypted_updates, normalized_weights, normalize=normalize
         )
 
         self.aggregation_time = time.time() - start_time

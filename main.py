@@ -278,6 +278,19 @@ class CKKSFedExperiment:
         self.selection_strategy = create_client_selection_strategy(
             self.config, num_clients=len(self.clients))
 
+        # 层次联邦学习（云-边-端）：enabled 时创建边缘层
+        self.hierarchy = None
+        if self.config.get('hierarchy', {}).get('enabled', False):
+            from ckks_fed.hierarchy import HierarchyController
+            self.hierarchy = HierarchyController(
+                self.config, self.server_ckks_manager, num_clients=len(self.clients))
+            info = self.hierarchy.info()
+            tree([
+                ("🛰️ ", f"Hierarchy: edges={info['num_edges']}  |  "
+                        f"assignment={info['assignment']}  |  "
+                        f"clients/edge={info['edge_clients']}"),
+            ], indent=1)
+
         # 带宽模拟器（确保模拟 wall-clock 时间使用配置的异构带宽）
         from ckks_fed.bandwidth_simulator import BandwidthSimulator
         bw_cfg = self.config.get('bandwidth', {})
@@ -364,18 +377,23 @@ class CKKSFedExperiment:
                 mask = client.compute_local_mask(update, client.ckks_manager, round_num)
                 client_masks.append(mask)
 
-        # 2) 服务器聚合全局 batch 级 mask
+        # 2) 聚合全局 batch 级 mask（层次模式：边缘先合并部分计数，云再合并）
         global_mask = None
         if gmv_mode != 'none' and client_masks:
             packing = self.server_ckks_manager.packing_strategy if self.server_ckks_manager else None
             values_per_chunk = packing.get_values_per_chunk() if packing else 8192
             total_params = sum(p.numel() for p in self.server.model.parameters())
             num_batches = (total_params + values_per_chunk - 1) // values_per_chunk
-            global_mask = self.server.run_global_mask_vote(
-                client_masks=client_masks,
-                num_batches=num_batches,
-                round_num=round_num,
-            )
+            if self.hierarchy is not None:
+                mask_by_cid = {c.client_id: m for c, m in zip(selected_clients, client_masks)}
+                global_mask = self.hierarchy.vote_global_mask(
+                    mask_by_cid, num_batches=num_batches, round_num=round_num)
+            else:
+                global_mask = self.server.run_global_mask_vote(
+                    client_masks=client_masks,
+                    num_batches=num_batches,
+                    round_num=round_num,
+                )
 
             # 记录每轮 batch 索引详情（用于分析通信开销）
             self._log_batch_indices(round_num, selected_clients, client_masks, global_mask)
@@ -409,9 +427,20 @@ class CKKSFedExperiment:
                      f"total_plain={fmt_size(total_plaintext_size)}  |  "
                      f"total_cipher={fmt_size(total_ciphertext_size)}")
 
-        # 标准路径：同态聚合 + 密文域更新全局模型（服务器不解密）
-        aggregated_update = self.server.aggregate_encrypted_updates(
-            encrypted_updates, client_weights, self.server_ckks_manager, client_upload_sizes)
+        # 聚合：标准路径（客户端密文→服务器）或层次路径（客户端密文→边缘→服务器）
+        if self.hierarchy is not None:
+            enc_by_cid = {c.client_id: e for c, e in zip(selected_clients, encrypted_updates)}
+            w_by_cid = {c.client_id: w for c, w in zip(selected_clients, client_weights)}
+            edge_updates, edge_weights, edge_sizes = self.hierarchy.aggregate_edges(
+                enc_by_cid, w_by_cid, round_num=round_num)
+            # normalize=False：边缘密文已按全局权重预缩放，云只做加法合并
+            # （避免二次密文×标量导致 CKKS 乘法深度耗尽）
+            aggregated_update = self.server.aggregate_encrypted_updates(
+                edge_updates, edge_weights, self.server_ckks_manager, edge_sizes,
+                normalize=False)
+        else:
+            aggregated_update = self.server.aggregate_encrypted_updates(
+                encrypted_updates, client_weights, self.server_ckks_manager, client_upload_sizes)
         self.server.update_global_model(aggregated_update)
 
         # 评估：服务器不持私钥，由客户端解密全局模型并完成评估后上报

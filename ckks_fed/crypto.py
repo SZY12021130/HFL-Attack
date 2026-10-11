@@ -264,6 +264,13 @@ class CKKSEvaluator:
             raise ValueError("密文数量和权重数量必须相同")
         if len(ciphertexts) == 0:
             raise ValueError("密文列表不能为空")
+        # 全 1 权重：纯密文加法，不引入新的缩放（层次聚合的云侧合并路径，
+        # 避免在已乘过标量的边缘密文上再做密文×标量导致 scale 越界）
+        if all(abs(w - 1.0) < 1e-12 for w in weights):
+            result = ciphertexts[0]
+            for ct in ciphertexts[1:]:
+                result = self.add(result, ct)
+            return result
         result = self.multiply_scalar(ciphertexts[0], weights[0])
         for i in range(1, len(ciphertexts)):
             weighted = self.multiply_scalar(ciphertexts[i], weights[i])
@@ -649,25 +656,38 @@ class CKKSManager:
         return result
 
     def aggregate_encrypted_updates(self, encrypted_updates: List[Dict[str, Any]],
-                                    weights: List[float]) -> Dict[str, Any]:
-        """聚合加密的模型更新（FedPHE 对齐：统一 __sparse__ 格式）"""
+                                    weights: List[float],
+                                    normalize: bool = True) -> Dict[str, Any]:
+        """聚合加密的模型更新（FedPHE 对齐：统一 __sparse__ 格式）
+
+        Args:
+            encrypted_updates: 稀疏加密更新列表
+            weights: 各更新对应的权重
+            normalize: True = 每个 batch 内按贡献权重归一化（扁平单级聚合，
+                一次密文×标量）；False = 仅做加权和不归一化（层次聚合用：
+                边缘已按全局权重预缩放，服务器纯加法合并，避免二次乘法
+                耗尽乘法深度）
+        """
         if len(encrypted_updates) == 0:
             raise ValueError("加密更新列表为空")
 
         if not encrypted_updates[0].get('__sparse__'):
             raise ValueError("加密更新必须使用 __sparse__ 格式（FedPHE 对齐）")
 
-        return self._aggregate_sparse_updates(encrypted_updates, weights)
+        return self._aggregate_sparse_updates(encrypted_updates, weights,
+                                              normalize=normalize)
 
     def _aggregate_sparse_updates(self, encrypted_updates: List[Dict[str, Any]],
-                                  weights: List[float]) -> Dict[str, Any]:
+                                  weights: List[float],
+                                  normalize: bool = True) -> Dict[str, Any]:
         """
         稀疏加密更新的聚合。
 
         核心逻辑（与 FedPHE 论文对齐）：
           - 每个 batch 独立聚合
           - 只聚合提交了该 batch 的客户端
-          - 记录每个 batch 的聚合权重和（__sum_weights__），供解密归一化
+          - normalize=True 时按该 batch 贡献权重归一化（扁平聚合）
+          - normalize=False 时做不归一化的加权和（层次聚合：权重已全局预缩放）
         """
         # 强制密文聚合路径：所有打包策略均通过同态运算聚合
         # 服务器不解密客户端更新，仅执行密文级别的加权加法操作
@@ -700,10 +720,15 @@ class CKKSManager:
                     sum_weights_per_batch[batch_idx] += weights[client_idx]
 
             if len(batch_cts) > 0:
-                # 聚合时直接归一化（方案 B），解密时无需再除。
-                total_w = sum(batch_weights)
-                norm_weights = [w / total_w for w in batch_weights]
-                aggregated_batch = self.evaluator.weighted_average(batch_cts, norm_weights)
+                if normalize:
+                    # 扁平聚合：聚合时直接归一化（方案 B），解密时无需再除。
+                    total_w = sum(batch_weights)
+                    norm_weights = [w / total_w for w in batch_weights]
+                    aggregated_batch = self.evaluator.weighted_average(batch_cts, norm_weights)
+                else:
+                    # 层次聚合：边缘已按全局权重预缩放，这里只做加权和不归一化，
+                    # 避免二次密文×标量耗尽乘法深度（CKKS 加法不消耗层级）
+                    aggregated_batch = self.evaluator.weighted_average(batch_cts, batch_weights)
                 aggregated_ciphertexts.append(aggregated_batch)
                 aggregated_mask[batch_idx] = 1
 

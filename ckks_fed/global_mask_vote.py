@@ -236,6 +236,53 @@ class GlobalMaskVote:
     # ==================================================================
     # 服务器侧：聚合客户端掩码
     # ==================================================================
+    def mask_from_counts(
+        self,
+        counts: np.ndarray,
+        total_batches: int,
+        num_voters: int,
+    ) -> Optional[np.ndarray]:
+        """
+        从“各 batch 被选中次数”的计数向量生成全局掩码。
+
+        该接口同时支持扁平投票与层次投票：
+          - 扁平：counts = 所有客户端 mask 之和，num_voters = 客户端数；
+          - 层次（云-边-端）：counts = 各边缘部分计数之和，
+            num_voters = 全体参与客户端数（threshold 模式需要）。
+
+        Args:
+            counts: shape=(total_batches,) 的选中次数向量
+            total_batches: batch 总数
+            num_voters: 参与投票的客户端总数
+
+        Returns:
+            np.ndarray(int8) shape=(total_batches,) 或 None（mode=none）
+        """
+        if self.mode == "none":
+            return None
+
+        if self.mode == "union":
+            # 并集：任一客户端选中则纳入
+            return (counts > 0).astype(np.int8)
+
+        if self.mode == "threshold":
+            threshold_count = max(1, int(self.threshold_pct * num_voters))
+            return (counts >= threshold_count).astype(np.int8)
+
+        if self.mode == "topk":
+            # TopK：按选中次数排序，取前 K 个
+            if self.topk_pct is not None and 0 < self.topk_pct <= 1.0:
+                k = max(1, int(np.ceil(self.topk_pct * total_batches)))
+            else:
+                k = self.topk_k
+            k = min(k, total_batches)
+            topk_indices = np.argpartition(counts, -k)[-k:]
+            global_mask = np.zeros(total_batches, dtype=np.int8)
+            global_mask[topk_indices] = 1
+            return global_mask
+
+        raise ValueError(f"未知投票模式: {self.mode}")
+
     def server_aggregate(
         self,
         client_masks: List[np.ndarray],
@@ -257,29 +304,9 @@ class GlobalMaskVote:
 
         # 堆叠为矩阵 (num_clients, total_batches)
         mask_matrix = np.stack(client_masks, axis=0)
-
-        if self.mode == "union":
-            # 并集：任意客户端选中则纳入
-            global_mask = np.any(mask_matrix, axis=0).astype(np.int8)
-
-        elif self.mode == "threshold":
-            # 阈值：超过 threshold_pct 的客户端选中才纳入
-            counts = np.sum(mask_matrix, axis=0)
-            threshold_count = max(1, int(self.threshold_pct * len(client_masks)))
-            global_mask = (counts >= threshold_count).astype(np.int8)
-
-        elif self.mode == "topk":
-            # TopK：按选中次数排序，取前 K 个
-            counts = np.sum(mask_matrix, axis=0)
-            # 支持比例方式：topk_pct (0~1) 优先于 topk_k
-            if self.topk_pct is not None and 0 < self.topk_pct <= 1.0:
-                k = max(1, int(np.ceil(self.topk_pct * total_batches)))
-            else:
-                k = self.topk_k
-            k = min(k, total_batches)
-            topk_indices = np.argpartition(counts, -k)[-k:]
-            global_mask = np.zeros(total_batches, dtype=np.int8)
-            global_mask[topk_indices] = 1
+        counts = np.sum(mask_matrix, axis=0)
+        global_mask = self.mask_from_counts(counts, total_batches,
+                                            num_voters=len(client_masks))
 
         selected = int(global_mask.sum())
         
