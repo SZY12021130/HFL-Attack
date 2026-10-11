@@ -1204,8 +1204,8 @@ class CKKSFedExperiment:
         lines.append(f"| # | Metric / 指标 | Formula / 公式 |")
         lines.append(f"|---|---------------|----------------|")
         if getattr(self, 'ppbr', None) is not None:
-            lines.append(f"| 1 | 客户端→边缘上传 / Client→Edge | `[x_{i,j}]_A`（云公钥分块密文）+ `z`（SA 掩码） |")
-            lines.append(f"| 2 | 边缘→云上传 / Edge→Cloud | `[x_i]_A = Σ_j [x_{i,j}]_A`、`[2m'_i]_{{Ei}}`（边缘公钥，云解不开） |")
+            lines.append(f"| 1 | 客户端→边缘上传 / Client→Edge | `[x_{{i,j}}]_A`（云公钥分块密文）+ `z`（SA 掩码） |")
+            lines.append(f"| 2 | 边缘→云上传 / Edge→Cloud | `[x_i]_A = Σ_j [x_{{i,j}}]_A`、`[2m'_i]_{{Ei}}`（边缘公钥，云解不开） |")
             lines.append(f"| 3 | 云→边缘下发 / Cloud→Edge | `[v]_{{Ei}} = [2m'_i]_{{Ei}} ∘ (r_i·x_i)` 盲化乘积密文 |")
             lines.append(f"| 4 | SA 掉线恢复 / Dropout recovery | Shamir (t,n−1) 份额重建 DH 私钥与自负载种子（early 不计入 / late 计入） |")
             lines.append(f"| 5 | 全局更新 / Global update | `w_a ← w_a + ζ·m_a`，`m_a` 经去噪 `Σ x''_i(m'_i+x_i)/l'` |")
