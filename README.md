@@ -11,6 +11,7 @@
 - **PTopk 残差补偿**（Error Feedback）：客户端维护明文残差累加器，未被选中的 batch 信息累积到下一轮，避免稀疏化造成永久信息丢失。
 - **层次联邦学习（云-边-端）**：可选开启边缘层（UAV 场景），客户端密文 → 边缘密文聚合 → 云密文聚合，密文全局模型沿云→边→端逐级下发；边缘节点只持公钥，不能解密。
 - **统一攻击框架**（`hfl_attacks/`）：四类攻击注册到统一注册表，由主配置 `attack` 段一键开关，攻击发生在客户端本地明文域、加密上传之前。
+- **PPBR 可插拔拜占庭鲁棒**（`ppbr/`）：严格按 He 等 IEEE TMC 2026 实现——边层 CLDP 符号统计聚类过滤恶意客户端 + 云层范数中位数筛选与裁剪恶意边缘；`ppbr.enabled: true` 自动开启云-边-端架构，与 attack 段组合即"攻击 × 防御"实验。
 
 > **已知限制**：密文域只能执行同态加权平均（FedAvg），median/krum/trimmed_mean 等
 > 需要明文坐标值的鲁棒聚合规则在纯密文服务器上无法执行——这是密钥分离架构的
@@ -42,8 +43,14 @@ HFL-Attack/
 │   ├── model_poisoning/       # 模型投毒 ×9
 │   ├── system_attacks/        # 系统攻击 ×6
 │   └── privacy_inference/     # 隐私推断 ×4
+├── ppbr/                      # PPBR 可插拔拜占庭鲁棒 (He 等 TMC 2026)
+│   ├── config.py              # PPBRConfig 超参数（论文默认值）
+│   ├── cldp.py                # 算法2b: CLDP 差分隐私扰动 (式2)
+│   ├── sign_stats.py          # 算法2a: 符号统计元组 + 坐标子集
+│   ├── clustering.py          # 算法2c: trimmed k-means 聚类过滤
+│   └── controller.py          # 每轮编排: 算法2/3/4/5 + 客户端动量
 ├── configs/
-│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构)
+│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR)
 ├── scripts/                   # 辅助脚本
 ├── tests/                     # 单元/集成测试
 ├── doc/                       # 解释性文档 (攻击原理 / 层次架构等)
@@ -65,6 +72,11 @@ python main.py
 #     enabled: true
 #     name: "model:sign_flipping"   # 注册表攻击名
 #     malicious_count: 2
+python main.py
+
+# 开启 PPBR 拜占庭鲁棒防御（自动启用云-边-端架构，可与攻击同时开启）
+#   ppbr:
+#     enabled: true
 python main.py
 
 # 隐私推断类攻击的离线评估 (成员推断 AUC / 梯度重建 PSNR 等)
@@ -136,16 +148,22 @@ CKKSFedExperiment.__init__()
                     本轮剔除（同步过滤 update/weight/loss/acc 列表）
                   • model:/system: 调 attack(update, AttackContext) 篡改
                     恶意客户端更新（合谋攻击可见本轮全部明文更新）
-5. 掩码投票（可选） 客户端本地 TopK 打分只上传 0/1 mask → 服务器/边缘
+5. PPBR 过滤（可选） ppbr.enabled 时（攻击之后、加密上传之前）：
+                  • 算法2：客户端符号统计(正/负/零号比例) → CLDP 扰动 →
+                    边缘 trimmed k-means 过滤恶意客户端
+                  • 算法3：客户端动量 m←φ·m+(1−φ)·Δ，上传动量
+                  • 算法4/5：云范数中位数 M 筛选恶意边缘 + 裁剪
+                    x″=min(1,M/‖m‖)，折入上传权重（自动开启层次架构）
+6. 掩码投票（可选） 客户端本地 TopK 打分只上传 0/1 mask → 服务器/边缘
                   聚合生成 global_mask 并广播（服务器永远看不到明文梯度）
-6. 加密上传       client.encrypt_update(update, global_mask)
+7. 加密上传       client.encrypt_update(update, global_mask)
                   TopK 稀疏化 + slot packing + CKKS 加密 + PTopk 残差补偿
-7. 密文聚合       • 标准：客户端密文 → 服务器加权平均（同态）
-                  • 层次：客户端密文 → 边缘密文聚合 → 云加法合并
+8. 密文聚合       • 标准：客户端密文 → 服务器加权平均（同态）
+                  • 层次/PPBR：客户端密文 → 边缘密文聚合 → 云加法合并
                     （边缘只持公钥；乘法深度方案见 doc/hierarchy.md）
-8. 解密评估       客户端解密全局模型并完成测试集评估后上报
+9. 解密评估       客户端解密全局模型并完成测试集评估后上报
                   （服务器不持私钥，永远拿不到明文模型/梯度）
-9. 指标记录       准确率/损失/通信量/时间/密文膨胀率 → MetricsCollector
+10. 指标记录      准确率/损失/通信量/时间/密文膨胀率 → MetricsCollector
 ```
 
 ### 关键代码位置
@@ -160,6 +178,8 @@ CKKSFedExperiment.__init__()
 | 全局掩码投票 | `ckks_fed/global_mask_vote.py` |
 | PTopk 残差补偿 | `ckks_fed/ptopk.py` |
 | 层次架构（云-边-端 / UAV） | `ckks_fed/hierarchy.py` |
+| PPBR 拜占庭鲁棒（算法 2/3/4/5） | `ppbr/controller.py` |
+| PPBR 阅读笔记（论文全文技术细节） | `paperlist/ppbr_notes.md` |
 | 攻击接口 / 注册表 | `hfl_attacks/base.py` (`ATTACK_REGISTRY`) |
 | 攻击评估 CLI | `hfl_attacks/runner.py` |
 | 攻击全量生效验证 | `scripts/verify_attacks.py` |
@@ -193,6 +213,7 @@ python -m pytest tests/test_attack_integration.py -v
 | `global_mask_vote` | 服务器端掩码聚合模式（none/union/threshold/topk）及阈值 |
 | `hierarchy` | 层次联邦开关：边缘节点数量、客户端-边缘关联策略（static/uav）、边缘采样率、UAV 移动模型 |
 | `attack` | 攻击总开关、攻击注册名、恶意客户端数量 |
+| `ppbr` | PPBR 拜占庭鲁棒开关（自动开启 hierarchy）及超参数：CLDP(ε_χ,L,L′)、聚类(k,b,trim)、动量(φ,ζ)、范数筛选(θ,β) |
 | `bandwidth` | 带宽模拟参数（用于虚拟时钟通信时间估计） |
 | `metrics` | 指标采集开关（时间、通信量、准确率等） |
 | `visualization` | 可视化开关与图像格式 |

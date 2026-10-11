@@ -8,7 +8,7 @@
 | 文件 | 论文 | 出处 | 借鉴点 |
 |---|---|---|---|
 | `25-（云边端）single-key homomorphic encryption.pdf` | Single-Key Homomorphic Encryption Based Efficient Privacy-Enhanced Federated Learning | IEEE Internet of Things Journal, 2025 (Liu 等) | ✅ **密文流转基线**：客户端 CKKS 加密 → 边缘密文部分聚合（样本数加权）→ 云密文全局聚合 → 只解密全局结果；密钥托管 + Shamir 分片 + TEE 重建私钥 🔧 |
-| `2026 - He 等 - PPBR ... edge-assisted hierarchical federated learning in mobil.pdf` | PPBR: Privacy-Preserving and Byzantine-Robust Edge-Assisted Hierarchical Federated Learning in Mobile Networks | IEEE TMC, 2026 (He 等) | ✅ 云-边-端三层职责划分；🔧 边层签名统计聚类过滤 + 云层范数中位数裁剪（抗拜占庭）；掉线容忍 |
+| `2026 - He 等 - PPBR ... edge-assisted hierarchical federated learning in mobil.pdf` | PPBR: Privacy-Preserving and Byzantine-Robust Edge-Assisted Hierarchical Federated Learning in Mobile Networks | IEEE TMC, 2026 (He 等) | ✅ **已实现**（`ppbr/` 包，可插拔）：边层 CLDP 符号统计聚类过滤（算法2 CC）+ 云层范数中位数筛选与裁剪（算法4 EF/算法5 GA）；完整阅读笔记见 `paperlist/ppbr_notes.md` |
 
 ## 二、架构参考开源实现
 

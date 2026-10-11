@@ -278,6 +278,27 @@ class CKKSFedExperiment:
         self.selection_strategy = create_client_selection_strategy(
             self.config, num_clients=len(self.clients))
 
+        # PPBR（可插拔拜占庭鲁棒，He 等 IEEE TMC 2026）：开启后自动启用层次架构
+        # （云-边-端是 PPBR 的前提），无需手动设置 hierarchy.enabled。
+        self.ppbr = None
+        ppbr_cfg = self.config.get('ppbr') or {}
+        if ppbr_cfg.get('enabled', False):
+            if not self.config.get('hierarchy', {}).get('enabled', False):
+                self.config['hierarchy']['enabled'] = True
+                tag_warn(LogTag.ATTACK,
+                         "ppbr.enabled=true → 自动开启 hierarchy（云-边-端架构）")
+            from ppbr import PPBRController
+            self.ppbr = PPBRController(
+                self.config,
+                num_edges=int(self.config['hierarchy'].get('num_edges', 3)),
+                seed=self.config['system'].get('random_seed', 42))
+            c = self.ppbr.cfg
+            tree([
+                ("🛡️", f"PPBR: ε_χ={c.epsilon_chi}  |  k={c.k} b={c.b}  |  "
+                       f"φ={c.momentum_phi} ζ={c.global_zeta}  |  "
+                       f"β={'已知' if c.beta_known else '未知'}"),
+            ], indent=1)
+
         # 层次联邦学习（云-边-端）：enabled 时创建边缘层
         self.hierarchy = None
         if self.config.get('hierarchy', {}).get('enabled', False):
@@ -426,6 +447,63 @@ class CKKSFedExperiment:
                         num_classes=self.config['data']['num_classes'],
                         round_num=round_num)
                     client_updates[i] = self.attack_inst.attack(client_updates[i], ctx)
+
+        # ==== PPBR（算法2 CC + 算法3 EA + 算法4 EF + 算法5 GA）：拜占庭鲁棒过滤 ====
+        # 攻击之后、加密上传之前调用；恶意更新先被 PPBR 过滤/裁剪再进入密文聚合。
+        # 信息流：边缘只见到 CLDP 扰动的 3 维符号元组，云只见到边缘范数。
+        if self.ppbr is not None and client_updates:
+            groups = self.hierarchy.group_clients(
+                [c.client_id for c in selected_clients], round_num)
+            # 算法 2 a/b：客户端符号统计 + CLDP 扰动
+            total_params = sum(v.numel() for v in client_updates[0].values())
+            coord_idx = self.ppbr.select_coordinates(total_params, round_num)
+            tuples = {}
+            for c, u in zip(selected_clients, client_updates):
+                tuples[c.client_id] = self.ppbr.perturb(
+                    self.ppbr.client_sign_tuple(u, coord_idx))
+            # 算法 2 c：边缘 trimmed k-means 过滤可信客户端
+            trusted = self.ppbr.filter_clients(tuples, groups)
+            keep = [c.client_id in trusted for c in selected_clients]
+            if not all(keep):
+                dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
+                tag_info(LogTag.ATTACK, f"round {round_num + 1}: PPBR 边缘过滤 {dropped}")
+                selected_clients = [c for c, k in zip(selected_clients, keep) if k]
+                client_updates = [u for u, k in zip(client_updates, keep) if k]
+                client_weights = [w for w, k in zip(client_weights, keep) if k]
+                train_losses = [l for l, k in zip(train_losses, keep) if k]
+                train_accs = [a for a, k in zip(train_accs, keep) if k]
+            # 算法 3：客户端动量 m ← φ·m + (1−φ)·Δ，上传动量而非原始更新
+            self.ppbr.update_momenta([c.client_id for c in selected_clients], client_updates)
+            client_updates = [self.ppbr.momentum_of(c.client_id) for c in selected_clients]
+            # 算法 4/5：云范数中位数筛选恶意边缘 + 裁剪系数 x''_i
+            alive = {c.client_id for c in selected_clients}
+            edge_means = self.ppbr.edge_means(groups, alive)
+            trusted_edges, clip, M = self.ppbr.cloud_filter_edges(edge_means)
+            st = self.ppbr.last_stats.get('edges', {})
+            tag_info(LogTag.ATTACK,
+                     f"round {round_num + 1}: PPBR 云筛选 edges={sorted(st.get('trusted', []))} "
+                     f"M={st.get('M', 0):.4f} clip={ {e: round(x, 3) for e, x in st.get('clip', {}).items()} }")
+            assign_map = self.hierarchy.assigner.assign(round_num)
+            keep = [assign_map.get(c.client_id) in trusted_edges for c in selected_clients]
+            if not any(keep):
+                # 极端情况：全部被筛掉则 fail-open——保留客户端但权重置 0
+                # （零权重密文对聚合无贡献），全局模型本轮不更新
+                tag_warn(LogTag.ATTACK,
+                         f"round {round_num + 1}: PPBR 筛空，本轮 fail-open（权重置 0 不更新）")
+                clip = {}
+            elif not all(keep):
+                dropped = [c.client_id for c, k in zip(selected_clients, keep) if not k]
+                tag_info(LogTag.ATTACK,
+                         f"round {round_num + 1}: PPBR 云筛选剔除 {dropped}")
+                selected_clients = [c for c, k in zip(selected_clients, keep) if k]
+                client_updates = [u for u, k in zip(client_updates, keep) if k]
+                client_weights = [w for w, k in zip(client_weights, keep) if k]
+                train_losses = [l for l, k in zip(train_losses, keep) if k]
+                train_accs = [a for a, k in zip(train_accs, keep) if k]
+            # 算法 5：裁剪系数 x''_i 与全局步长 ζ 折入上传权重（w_i·x''_i·ζ）
+            client_weights = [
+                w * self.ppbr.scale_of(assign_map.get(c.client_id), clip)
+                for c, w in zip(selected_clients, client_weights)]
 
         # ==== 全局掩码投票（隐私安全：客户端本地算 mask，只上传 mask）====
         gmv_mode = self.config.get('global_mask_vote', {}).get('mode', 'none')
