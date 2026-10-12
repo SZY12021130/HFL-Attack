@@ -899,6 +899,16 @@ class CKKSFedExperiment:
                 result = round_fn(round_num)
                 results.append(result)
 
+                # 内存卫生：PPBR 每轮创建数千个 TenSEAL CKKSVector，native 堆
+                # 增长/碎片会在 ~2h 后导致小额分配失败（观测到 1.79MB 分配崩溃）；
+                # 每轮主动 GC + 释放 GPU 缓存，并记录进程 RSS 便于观测趋势
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                _rss = psutil.Process().memory_info().rss / (1024 ** 3)
+                self.metrics.record('process_rss_gb', round(_rss, 3))
+
                 # 每N轮保存一次模型；999 = 仅保存最终模型
                 if (round_num + 1) % self.config['output']['save_interval'] == 0:
                     self._save_model(round_num + 1)
