@@ -35,3 +35,4 @@ visualization/
 Thumbs.db
 history_models/
 smoke_*.yaml
+configs/_*.yaml
