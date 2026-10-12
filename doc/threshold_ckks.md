@@ -419,7 +419,7 @@ t−1 爆炸/smudging、真实 CKKSContext 端到端、ceremony 统计字段）�
 
 - Wang Y., Inoue F., Gu Y., Shen X., Zhang M. "Privacy-preserving federated learning
   via secret sharing and multi-key homomorphic encryption" (CDKS-LSS), Information
-  Sciences 753, 2026.（`paperlist/2026 - Wang 等 - ... .pdf`）——部分解密泄漏与
+  Sciences 753, 2026.（`paperlist/26-CDKS-LSS.pdf`）——部分解密泄漏与
   LSS 修复。
 - He 等, "PPBR", IEEE TMC 2026（`paperlist/ppbr_notes.md`）——SA 掩码聚合与
   Shamir 私钥备份（`ppbr/sa.py` 复用来源）。

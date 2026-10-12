@@ -2,7 +2,7 @@
 
 > **论文**：PPBR: Privacy-Preserving and Byzantine-Robust Edge-Assisted Hierarchical Federated Learning in Mobile Networks
 > **作者**：He 等 | **出处**：IEEE Transactions on Mobile Computing (TMC), 2026
-> **PDF**：`paperlist/2026 - He 等 - PPBR ... .pdf`
+> **PDF**：`paperlist/26-PPBR.pdf`
 > **项目实现**：`ppbr/`（可插拔模块，见 `doc/ppbr.md` 与 README「执行流程与代码逻辑」）
 
 ---
