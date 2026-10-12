@@ -180,6 +180,13 @@ class PPBRProtocol:
                       self.controller.client_sign_tuple(u, coord_idx))
                   for cid, u in updates.items()}
         trusted: Set[int] = self.controller.filter_clients(tuples, groups)
+        # 过滤统计：良性/恶意各存活多少（攻击实验的关键诊断信息）
+        mal = getattr(self, '_malicious_ids', None) or set()
+        sub_mal = len([c for c in tuples if c in mal])
+        tru_mal = len([c for c in trusted if c in mal])
+        logger.info(
+            f"[PPBR] round {round_num + 1}: 边缘过滤 提交={len(tuples)} "
+            f"可信={len(trusted)} | 恶意: 提交={sub_mal} 存活={tru_mal}")
         updates = {cid: u for cid, u in updates.items() if cid in trusted}
         if not updates:
             tag = "PPBR 过滤后无可信客户端，本轮不更新"

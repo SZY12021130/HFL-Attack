@@ -332,22 +332,59 @@ Setup（每个客户端 i 本地执行）:
   任一客户端可解密全局模型；若客户端数量大，私钥分发面大。
 - PPBR 轨道：不用 CKKS 门限，走论文的 SA（X25519 + Shamir 私钥备份）体系。
 
-### 10.2 可插拔 `threshold` 模块规划
+### 10.2 可插拔 `threshold` 模块（已实现）
 
 ```yaml
 threshold:
-  enabled: false
-  mode: "ttp"        # ttp=可信分发（§4） | dkg=无可信机构（§5）
-  t: 5               # 门限（§3.2）
-  smudging: true     # 部分解密加噪（§9.1）
-  combiner: "client" # 组合器：client（场景 B，推荐）| server（场景 A）
+  enabled: false      # true=CKKS 轨道改走门限解密（与 PPBR 互斥，冲突时强制禁用）
+  mode: "ttp"         # ttp=可信分发（§4） | dkg=无可信机构（§5，理想解密模型）
+  t: 5                # 门限（§3.2），必须 ≥2
+  combiner: "client"  # 组合器：client（场景 B，推荐）| server（场景 A）
+  smudging: true      # 部分解密加噪标注（§9.1；真·部分解密的噪声语义见 toy_ckks.py）
 ```
 
-- `sharing.py`：$sk$ 分块 Shamir 分片（复用 `ppbr/sa.py`）；
-- `dkg.py`：Pedersen DKG（承诺-验证-份额聚合，§5.1）；
-- `toy_ckks.py`：教科书 CKKS + 真·部分解密，端到端验证 §3、§6 全部公式；
-- `ceremony.py`：每轮解密仪式编排（§6 场景 B 的消息流），记录份额字节数、
-  仪式耗时等指标。
+已实现模块（`threshold/`）：
+
+- `sharing.py`：任意长度秘密的 64B 分块 Shamir (t,n) 分片/恢复，复用
+  `ppbr/sa.py`（GF(2^521−1)）；份额 blob 为自定义二进制格式
+  （`THS1` 头 + 每块 `(block_idx, x, y[66B])` 记录，t 内嵌于头）；
+- `dkg.py`：Pedersen DKG 真实数学（承诺 `C_k = g^{a_k}·h^{b_k}`、
+  份额验证 `g^s·h^r ≡ ∏ C_k^{j^k}`、集体公钥 `g^{Σa_i0}`，`h` 由
+  SHA256("threshold-h") 确定性导出；教学参数见 docstring）；
+- `toy_ckks.py`：教科书单模数 CKKS（q=2^60−93 素数、N=4096、Δ=2^30、
+  σ≈3.2，numpy FFT negacyclic 乘法）+ **真·门限部分解密**
+  （mod-q Shamir 分片私钥 → `d_i = c1·s_i + e'_i`（smudging）
+  → Lagrange 组合），端到端验证 §3、§6、§9.1 全部公式；
+- `ceremony.py`：`ThresholdDecryptor` 仪式编排——ttp 分片分发后销毁
+  完整副本引用（§4.1 第 4 步）、每轮选前 t 个参与者重构/理想解密、
+  通信开销统计；`partial_decrypt_flow(...)` 为真实后端
+  （OpenFHE/Lattigo）预留的接口桩。
+
+main.py 集成（默认关闭，不影响现有实验）：threshold 启用时，每轮开头
+`decrypt_global_params` 解密全局模型明文下发训练（客户端
+`local_train(global_params=...)`），聚合后再做一次仪式解密、对明文全局
+模型评估；客户端加密上传与服务器密文加权聚合路径完全不变。
+
+记录的指标（metrics.json）：
+
+| 指标 | 含义 |
+|---|---|
+| `threshold_dist_bytes` | Setup 分发开销（每客户端份额字节数；ttp=份额 blob，dkg=(n−1)×132+t×66 估计），仅首轮记录 |
+| `threshold_ceremony_bytes` | 每轮仪式字节数（每轮两次仪式之和：训练前 + 评估前；ttp=t×份额+c1 广播，dkg=t×部分解密多项式+承诺+c1 广播估计） |
+| `threshold_ceremony_time` | 每轮仪式耗时（秒，两次之和） |
+| `threshold_ideal` | 是否理想解密模型（dkg=1，ttp=0） |
+
+三种开箱配置（§10.3 威胁模型对应）：
+
+| 场景 | 配置 | ideal |
+|---|---|---|
+| 场景 A：允许服务器看聚合模型（要掉线容忍） | `mode: ttp, combiner: server` | 0 |
+| 场景 B：服务器盲（ttp 分发生成密钥） | `mode: ttp, combiner: client` | 0 |
+| 场景 B + 无 TTP（★原项目目标） | `mode: dkg, combiner: client` | 1 |
+
+测试：`python -m pytest tests/test_threshold.py`（纯 CPU 秒级，18 项：
+sharing 恢复/门限失败、DKG 验证/篡改/恢复、toy_ckks 全解密/门限组合/
+t−1 爆炸/smudging、真实 CKKSContext 端到端、ceremony 统计字段）。
 
 ### 10.3 威胁模型对应
 

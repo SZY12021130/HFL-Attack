@@ -12,6 +12,7 @@
 - **层次联邦学习（云-边-端）**：可选开启边缘层（UAV 场景），客户端密文 → 边缘密文聚合 → 云密文聚合，密文全局模型沿云→边→端逐级下发；边缘节点只持公钥，不能解密。
 - **统一攻击框架**（`hfl_attacks/`）：四类攻击注册到统一注册表，由主配置 `attack` 段一键开关，攻击发生在客户端本地明文域、加密上传之前。
 - **PPBR 可插拔拜占庭鲁棒**（`ppbr/`）：严格按 He 等 IEEE TMC 2026 实现完整协议——边层 CLDP 符号统计聚类过滤恶意客户端、云层两轮点积范数盲化 + 中位数筛选与裁剪恶意边缘、SA 成对掩码安全聚合、客户端动量；`ppbr.enabled: true` 自动开启云-边-端架构并**切换整条加解密路线为 PPBR 协议**（双轨架构，不走全局投票/TopK），与 attack 段组合即"攻击 × 防御"实验。详见 `doc/ppbr.md`。
+- **门限 CKKS 解密**（`threshold/`）：可插拔 t-out-of-n 门限解密，把"每个客户端持完整 sk"改造为"任意 ≥t 个参与方协作才能解密"。两种模式：`ttp`（可信 Dealer Shamir 分片完整私钥并销毁，doc §4）与 `dkg`（Pedersen 分布式密钥生成，无 TTP，doc §5）；组合器可选 `client`（场景 B，服务器盲，推荐）/ `server`（场景 A）。客户端加密上传、服务器密文聚合路径完全不变；`threshold.enabled: true` 仅作用于 CKKS 轨道（与 PPBR 互斥）。完整协议分析见 `doc/threshold_ckks.md`。
 
 > **已知限制**：密文域只能执行同态加权平均（FedAvg），median/krum/trimmed_mean 等
 > 需要明文坐标值的鲁棒聚合规则在纯密文服务器上无法执行——这是密钥分离架构的
@@ -53,8 +54,13 @@ HFL-Attack/
 │   ├── sa.py                  # 真实 SA (Bonawitz'17): X25519+HKDF 协商、
 │   │                          #   Shamir 掉线恢复（见 doc/ppbr.md §3.2）
 │   └── protocol.py            # PPBRProtocol: 云/边缘/客户端完整协议时序
+├── threshold/                 # 门限 CKKS 解密 (t-out-of-n，可插拔，见 doc/threshold_ckks.md)
+│   ├── sharing.py             # 任意长度秘密分块 Shamir 分片/恢复（复用 ppbr/sa.py）
+│   ├── dkg.py                 # Pedersen DKG（承诺 + 份额验证 + 集体公钥）
+│   ├── toy_ckks.py            # 教科书 CKKS + 真·门限部分解密演示（numpy/CPU）
+│   └── ceremony.py            # ThresholdDecryptor: 仪式编排 + 通信开销统计
 ├── configs/
-│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR)
+│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR + threshold)
 ├── scripts/                   # 辅助脚本
 ├── tests/                     # 单元/集成测试
 ├── doc/                       # 解释性文档 (攻击原理 / 层次架构等)
@@ -81,6 +87,14 @@ python main.py
 # 开启 PPBR 拜占庭鲁棒防御（自动启用云-边-端架构，可与攻击同时开启）
 #   ppbr:
 #     enabled: true
+python main.py
+
+# 开启门限 CKKS 解密（CKKS 轨道；与 PPBR 互斥，客户端不再各自持完整 sk）
+#   threshold:
+#     enabled: true
+#     mode: "ttp"        # "ttp"=可信分发(doc §4) | "dkg"=分布式密钥生成(doc §5)
+#     t: 5                # 门限：任意 ≥t 个客户端协作才能解密
+#     combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
 python main.py
 
 # 隐私推断类攻击的离线评估 (成员推断 AUC / 梯度重建 PSNR 等)
@@ -305,6 +319,7 @@ python -m pytest tests/test_attack_integration.py -v
 | `hierarchy` | 层次联邦开关：边缘节点数量、客户端-边缘关联策略（static/uav）、边缘采样率、UAV 移动模型 |
 | `attack` | 攻击总开关、攻击注册名、恶意客户端数量 |
 | `ppbr` | PPBR 拜占庭鲁棒开关（自动开启 hierarchy，双轨架构切换到完整协议路线，详见 doc/ppbr.md）及超参数：CLDP(ε_χ,L,L′)、聚类(k,b,trim)、动量(φ,ζ)、噪声掩码(noise_rel)、范数筛选(θ,β) |
+| `threshold` | 门限 CKKS 解密开关（仅 CKKS 轨道，与 PPBR 互斥）：模式(ttp/dkg)、门限 t、组合器(client=场景B-服务器盲 / server=场景A)、smudging（详见 doc/threshold_ckks.md） |
 | `bandwidth` | 带宽模拟参数（用于虚拟时钟通信时间估计） |
 | `metrics` | 指标采集开关（时间、通信量、准确率等） |
 | `visualization` | 可视化开关与图像格式 |

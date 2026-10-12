@@ -68,15 +68,44 @@ class Scaling(ClientUpdateAttack):
 
 @register_attack
 class GaussianNoise(ClientUpdateAttack):
-    """高斯噪声攻击：向更新注入高斯噪声（参数透传 std / mean）"""
+    """高斯噪声攻击：以高斯噪声作为更新（PPBR 论文 §VIII 攻击 3）。
+
+    两种标定方式（via config attack.params）：
+    - absolute（默认保持旧行为）：update ← N(mean, std²)，std 绝对值。
+      注意：std 取 1.0 而良性 Δ 每维幅度 ~1e-3 时噪声范数大良性更新 ~100 倍，
+      任何防御都不可能守住，不属于论文评测语义，仅用于压测。
+    - relative（论文语义）：以本轮良性客户端更新的逐坐标标准差为尺度，
+      update ← N(0, (rel_std·σ_benign)²)。σ_benign 由 context 中良性更新
+      实时估计（σ_benign,i = std_honest[coord_i]），与 CenteredClipping
+      （Karimireddy et al. 2021）等文献的高斯攻击标定一致——恶意更新
+      在幅值统计上与良性不可区分，才能检验防御的真实鲁棒性。
+    """
 
     name = "model:gaussian_noise"
 
-    def __init__(self, std: float = 1.0, mean: float = 0.0):
-        self._attack = GaussianNoiseAttack(std=std, mean=mean)
+    def __init__(self, std: float = 1.0, mean: float = 0.0,
+                 mode: str = "absolute", rel_std: float = 1.0):
+        self.std = std
+        self.mean = mean
+        self.mode = mode
+        self.rel_std = rel_std
 
     def attack(self, update, context):
-        return self._attack.attack(update, context.global_params)
+        if self.mode == "relative":
+            honest = [u for j, u in enumerate(context.all_updates or [])
+                      if j not in (context.malicious_indices or [])]
+            if honest:
+                out = {}
+                for k, v in update.items():
+                    sigma = torch.stack([u[k].float() for u in honest]).std(dim=0)
+                    out[k] = torch.randn_like(v, dtype=torch.float32) \
+                        * (self.rel_std * sigma)
+                return out
+        # absolute 回退（兼容旧行为）
+        import numpy as np
+        return {k: v + torch.from_numpy(
+            np.random.normal(self.mean, self.std, v.shape)).to(v.device, v.dtype)
+            for k, v in update.items()}
 
 
 @register_attack

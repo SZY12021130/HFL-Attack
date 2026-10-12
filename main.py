@@ -53,6 +53,9 @@ from ckks_fed.log_utils import (
     safe_mean,
 )
 
+# 门限 CKKS 解密（doc/threshold_ckks.md）：t-out-of-n 门限解密可插拔模块
+from threshold import ThresholdConfig, ThresholdDecryptor
+
 
 class MetricsCollector:
     """实验指标收集器"""
@@ -310,6 +313,9 @@ class CKKSFedExperiment:
                 self.config,
                 num_edges=int(self.config['hierarchy'].get('num_edges', 3)),
                 seed=self.config['system'].get('random_seed', 42))
+            # 供协议日志区分良性/恶意（攻击实验的过滤诊断）；
+            # self.malicious_ids 在下方攻击初始化才填充，先置空、后回填
+            self.ppbr._malicious_ids = set()
             c = self.ppbr.cfg
             tree([
                 ("🛡️", f"PPBR: ε_χ={c.epsilon_chi}  |  k={c.k} b={c.b}  |  "
@@ -319,6 +325,27 @@ class CKKSFedExperiment:
             # 双轨标记：客户端打印与 PTopk 残差逻辑按 PPBR 语义走
             for c in self.clients:
                 c.track = "ppbr"
+
+        # 门限 CKKS 解密（doc/threshold_ckks.md）：把"每个客户端持完整 sk"
+        # 改造为 t-out-of-n 门限解密。仅 CKKS 轨道——与 PPBR 互斥
+        # （PPBR 走论文的 SA 密钥体系，不经单密钥 CKKS 门限）。
+        self.threshold_cfg = ThresholdConfig.from_config(
+            self.config.get('threshold') or {})
+        self.threshold_decryptor: ThresholdDecryptor = None
+        self._threshold_dist_recorded = False
+        if self.threshold_cfg.enabled:
+            if ppbr_cfg.get('enabled', False):
+                self.threshold_cfg.enabled = False
+                tag_warn(LogTag.INIT,
+                         "threshold.enabled=true 与 ppbr.enabled=true 冲突"
+                         "（threshold 仅 CKKS 轨道）→ 强制禁用 threshold")
+            else:
+                c = self.threshold_cfg
+                tree([
+                    ("🔑", f"Threshold: mode={c.mode}  |  combiner={c.combiner}"
+                           f"（{'场景B-服务器盲' if c.combiner == 'client' else '场景A-服务器可见'}）"
+                           f"  |  t={c.t}  |  smudging={c.smudging}"),
+                ], indent=1)
 
         # 层次联邦学习（云-边-端）：enabled 时创建边缘层
         self.hierarchy = None
@@ -350,7 +377,8 @@ class CKKSFedExperiment:
             if name not in ATTACK_REGISTRY:
                 raise ValueError(
                     f"未知攻击 '{name}'，注册表可选: {sorted(ATTACK_REGISTRY)}")
-            self.attack_inst = ATTACK_REGISTRY[name]()
+            params = attack_cfg.get('params') or {}
+            self.attack_inst = ATTACK_REGISTRY[name](**params)
             n_mal = min(int(attack_cfg.get('malicious_count', 1)), len(self.clients))
             placement = attack_cfg.get('placement', 'last')
             if placement == 'spread' and self.hierarchy is not None:
@@ -386,6 +414,8 @@ class CKKSFedExperiment:
             tree([
                 ("⚔️", f"Attack: {name}  |  malicious={self.malicious_ids}"),
             ], indent=1)
+            if self.ppbr is not None:
+                self.ppbr._malicious_ids = set(self.malicious_ids)
 
         # 带宽模拟器（确保模拟 wall-clock 时间使用配置的异构带宽）
         from ckks_fed.bandwidth_simulator import BandwidthSimulator
@@ -453,13 +483,36 @@ class CKKSFedExperiment:
 
         encrypted_global = self.server.get_encrypted_global_params()
         client_updates, client_weights, train_losses, train_accs = [], [], [], []
-        for client in selected_clients:
-            update, loss, acc = client.local_train(encrypted_global_params=encrypted_global, round_num=round_num)
-            client_updates.append(update)
-            client_weights.append(client.get_weight())
-            train_losses.append(loss)
-            train_accs.append(acc)
-            self.metrics.record('local_train_time', client.local_train_time)
+        threshold_stats = None
+        if self.threshold_cfg.enabled:
+            # 门限轨道：每轮开头由 t 个被选客户端协作解密全局模型
+            # （客户端加密上传、服务器密文加权聚合路径完全不变）
+            if self.threshold_decryptor is None:
+                self.threshold_decryptor = ThresholdDecryptor(
+                    self.threshold_cfg, len(self.clients),
+                    self.ckks_manager.context.get_full_context_bytes(),
+                    poly_modulus_degree=self.config['ckks'].get(
+                        'poly_modulus_degree', 8192))
+            plain_global, threshold_stats = \
+                self.threshold_decryptor.decrypt_global_params(
+                    encrypted_global,
+                    [c.client_id for c in selected_clients])
+            for client in selected_clients:
+                update, loss, acc = client.local_train(
+                    global_params=plain_global, round_num=round_num)
+                client_updates.append(update)
+                client_weights.append(client.get_weight())
+                train_losses.append(loss)
+                train_accs.append(acc)
+                self.metrics.record('local_train_time', client.local_train_time)
+        else:
+            for client in selected_clients:
+                update, loss, acc = client.local_train(encrypted_global_params=encrypted_global, round_num=round_num)
+                client_updates.append(update)
+                client_weights.append(client.get_weight())
+                train_losses.append(loss)
+                train_accs.append(acc)
+                self.metrics.record('local_train_time', client.local_train_time)
 
         # ==== 攻击：DoS 类先剔除本轮不参与的恶意客户端，其余在明文域篡改更新 ====
         # （攻击发生在客户端本地、加密上传之前——即"客户端被攻破/恶意客户端"威胁模型；
@@ -548,12 +601,41 @@ class CKKSFedExperiment:
                 encrypted_updates, client_weights, self.server_ckks_manager, client_upload_sizes)
         self.server.update_global_model(aggregated_update)
 
-        # 评估：服务器不持私钥，由客户端解密全局模型并完成评估后上报
+        # 评估：门限轨道用仪式解密出的明文全局模型做明文评估；否则由
+        # 客户端解密全局模型并完成评估后上报（服务器不持有私钥）
         criterion = nn.CrossEntropyLoss()
         eval_client = selected_clients[0]
-        test_loss, test_acc = eval_client.evaluate_encrypted(
-            self.server.get_encrypted_global_params(), self.test_loader, criterion)
+        if self.threshold_cfg.enabled:
+            # 聚合完成后再做一次仪式解密，评估明文全局模型（服务器全程盲）
+            enc_eval = self.server.get_encrypted_global_params()
+            eval_params, eval_stats = \
+                self.threshold_decryptor.decrypt_global_params(
+                    enc_eval, [c.client_id for c in selected_clients])
+            eval_client.set_model_params(eval_params)
+            test_loss, test_acc = evaluate(
+                eval_client.model, self.test_loader, criterion, self.device)
+            # 每轮两次仪式（训练前 + 评估前）的开销合并计入本轮指标
+            threshold_stats['ceremony_bytes_per_round'] += \
+                eval_stats['ceremony_bytes_per_round']
+            threshold_stats['ceremony_time_sec'] += \
+                eval_stats['ceremony_time_sec']
+        else:
+            test_loss, test_acc = eval_client.evaluate_encrypted(
+                self.server.get_encrypted_global_params(), self.test_loader, criterion)
         self.server.record_evaluation(test_loss, test_acc)
+
+        if threshold_stats is not None:
+            self.metrics.record('threshold_ceremony_bytes',
+                                threshold_stats['ceremony_bytes_per_round'])
+            self.metrics.record('threshold_ceremony_time',
+                                threshold_stats['ceremony_time_sec'])
+            self.metrics.record('threshold_ideal',
+                                int(threshold_stats['ideal']))
+            if not self._threshold_dist_recorded:
+                # 首轮额外记录 Setup 分发开销（每客户端份额字节数）
+                self.metrics.record('threshold_dist_bytes',
+                                    threshold_stats['dist_bytes_per_client'])
+                self._threshold_dist_recorded = True
 
         self.metrics.record('train_loss', np.mean(train_losses))
         self.metrics.record('train_acc', np.mean(train_accs))
@@ -775,7 +857,9 @@ class CKKSFedExperiment:
             upload_mode = "PPBR 协议消息（[x]_A + SAz）"
         blank_line()
         banner("Experiment Start", width=72)
-        kv("Mode", "PPBR" if self.ppbr is not None else "Encrypted", indent=1)
+        kv("Mode", "PPBR" if self.ppbr is not None else
+           ("CKKS-Encrypted + Threshold" if self.threshold_cfg.enabled
+            else "Encrypted"), indent=1)
         kv("Rounds", self.config['system']['num_rounds'], indent=1)
         kv("Upload", upload_mode, indent=1)
         separator(width=72)
