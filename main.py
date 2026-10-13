@@ -267,6 +267,15 @@ class CKKSFedExperiment:
             ("🖥️ ", f"Aggregation Server  |  rule={self.config.get('defense', {}).get('aggregation_rule', 'fedavg')}  |  encrypted_state=initialized"),
         ], indent=1)
 
+        # 统一 CKKS 上下文：只反序列化一次，全体客户端共享
+        # （原先每客户端各做一次 full-context 序列化+反序列化：240 客户端时
+        #  初始化耗时 O(n)×单次加载且内存放大 ~n 倍，是长跑初始化瓶颈）
+        from ckks_fed.crypto import CKKSContext
+        poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
+        shared_context = CKKSContext.from_full_bytes(
+            self.ckks_manager.context.get_full_context_bytes(),
+            poly_modulus_degree=poly_degree)
+
         self.clients = []
         for i in range(self.config['system']['num_clients']):
             client_model = create_model(self.config['model']['name'], self.config)
@@ -275,13 +284,7 @@ class CKKSFedExperiment:
                 train_loader=self.client_loaders[i],
                 config=self.config, device=self.device
             )
-            # 统一 CKKS 上下文：从服务器序列化上下文反序列化
-            from ckks_fed.crypto import CKKSContext
-            poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
-            context = CKKSContext.from_full_bytes(
-                self.ckks_manager.context.get_full_context_bytes(),
-                poly_modulus_degree=poly_degree)
-            client.ckks_manager = CKKSManager(_ckks_cfg.copy(), context=context)
+            client.ckks_manager = CKKSManager(_ckks_cfg.copy(), context=shared_context)
             self.clients.append(client)
         tree([
             ("👤", f"Created {len(self.clients)} clients  |  "
