@@ -1,0 +1,1948 @@
+# 同态加密 × 联邦学习：模式总结、演进链剖析与 UAV 场景方案设计
+
+> **阅读范围**：本目录 11 篇 HE+FL 论文全文 + 2 份中文架构笔记（`联邦学习基本架构.pdf`、`联邦学习的加权方式.pdf`）
+> **视角**：RLWE 派密码体制 × 联邦鲁棒性 × 无人机/边缘辅助层次联邦学习
+> **产出**：① 四维模式分类；② 循序渐进的技术演进链（含每篇"解决了什么 / 遗留了什么"）；③ UAV-FL 真实约束与研究点；④ 4 个新方案（2 标准 FL + 2 层次 FL），每个含场景 / 问题 / 创新 / 威胁模型 / 闭环 RLWE 公式推导
+> **文献出处均已逐篇核对 PDF 首页与 DOI**，见附录 A（本目录旧的 `_reading_report.md` 中 ESAFL/FedPHE 标注为 TIFS、Ftopk 标注为 TIFS 均有误，本报告已订正）
+
+---
+
+## 目录
+
+- [0. 阅读方法与材料](#0-阅读方法与材料)
+- [1. 四维模式分类](#1-四维模式分类)
+- [2. 循序渐进的技术演进链](#2-循序渐进的技术演进链)
+- [3. RLWE / CKKS 预备：统一记号与噪声预算](#3-rlwe--ckks-预备统一记号与噪声预算)
+- [4. UAV / Edge-assisted FL：真实约束与值得研究的点](#4-uav--edge-assisted-fl真实约束与值得研究的点)
+- [5. 四个新方案](#5-四个新方案)
+  - [5.A SAS-FL —— 标准 FL / 多密钥 / 子集可选聚合 / 全流程抗掉线](#5a-sas-fl子集可选加性预共享的多密钥联邦学习)
+  - [5.B VRSA-FL —— 标准 FL / 密文域拜占庭鲁棒 / 无 TA 的可验证聚合](#5b-vrsa-fl可验证的拜占庭鲁棒安全聚合联邦学习)
+  - [5.C MUFA-HFL —— 端-UAV-云 / 精确无偏加权 / UAV 零私钥 / 迁移免疫](#5c-mufa-hfl迁移免疫的无偏加权-uav-层次联邦学习)
+  - [5.D EFS-HFL —— 多 UAV 编队 / 前向安全 / 能量自适应块级异构稀疏](#5d-efs-hfl前向安全能量自适应的多-uav-编队层次联邦学习)
+- [6. 四方案横向对照与选型](#6-四方案横向对照与选型)
+- [7. 自评、局限与后续工作](#7-自评局限与后续工作)
+- [附录 A. 论文清单与出处核对](#附录-a-论文清单与出处核对)
+- [附录 B. 符号表](#附录-b-符号表)
+
+---
+
+## 0. 阅读方法与材料
+
+11 篇论文全文已由 PDF 抽取为文本逐篇通读，出处、卷期、DOI 均按 PDF 首页核对。下表是本报告的"主索引"，后续章节以编号 P1–P11 引用。
+
+| 编号 | 文件 | 方案简称 | 年份 / 出处（已核对） | 密钥范式 | 架构 | 可信机构 | 一句话定位 |
+|---|---|---|---|---|---|---|---|
+| P1 | `17-SecAgg.pdf` | SecAgg | 2017, ACM CCS | 无加密（成对掩码 + Shamir） | 标准 FL | 无 | 明文域安全求和的奠基协议 |
+| P2 | `19-CDKS.pdf` | CDKS / MK-CKKS | 2019, ACM CCS | 多密钥 CKKS/BFV | 通用 MKHE | 无（CRS） | 首个支持 SIMD 打包的多密钥 (F)HE |
+| P3 | `24-ResFed.pdf` | ResFed | 2024, IEEE IoT-J | 无加密（与密码正交） | 标准 FL | 无 | 深度残差压缩，通信省 ~99% |
+| P4 | `24-SecFed.pdf` | SecFed / EMK-BFV | 2024, IEEE TDSC 21(4) | 多密钥 BFV（TEE 内主密钥拆分） | 标准 FL（两层） | **TEE** | 用 $rk_i = secret - s_i$ 抗 $N-2$ 掉线 |
+| P5 | `25-ESAFL.pdf` | ESAFL / ESHE | 2025, IEEE TDSC 22(4) | 多加密密钥 + **单一共享解密密钥** | 标准 FL | AS（仅初始化） | 一步本地解密，彻底消除部分解密交互 |
+| P6 | `25-FedPHE.pdf` | FedPHE | 2025, IEEE TDSC 22(5) | 单密钥打包 CKKS + Shamir 混淆 | 标准 FL | **KDC（周期在线）** | 打包 + pack-level top-ζ + 抗 straggler 选择 |
+| P7 | `25-MASER.pdf` | MASER | 2025, IEEE TDSC（arXiv 2505.14797） | 多密钥 CKKS（xMKCKKS 聚合公钥） | 标准 FL | Key Manager | 共识剪枝 + 分片，MKHE 提速 3–8× |
+| P8 | `25-SKHE.pdf` | SKHE | 2025, IEEE IoT-J 12(13) | 单密钥 CKKS + ECC + Shamir | **端-边-云 HFL** | TA + **云端 TEE** | ECC 加密私钥、Shamir 分片给边缘、TEE 内重建解密 |
+| P9 | `26-CDKS-LSS.pdf` | CDKS-LSS | 2026, Information Sciences 753:123619 | 多密钥 CKKS + Shamir LSS | 标准 FL | 无（半诚实服务器） | 对**部分解密值**再做 LSS，实现阈值解密 |
+| P10 | `26-Ftopk.pdf` | **DSVFL**（梯度算法 Ftop-k，聚合协议 SCSA） | 2026, IEEE TMC 25(4) | 阈值 Paillier + Shamir | 标准 FL（边缘计算） | **TA（每轮在线验证）** | 服务器**恶意**模型下的可验证安全聚合 |
+| P11 | `26-PPBR.pdf` | PPBR | 2026, IEEE TMC 25(2) | 单密钥 PLHE（BFV）+ CLDP + SA | **端-边-云 HFL** | 无 TEE / 无 KDC | 双层拜占庭过滤：边层 CLDP 聚类 + 云层 PLHE 范数裁剪 |
+
+> 两份中文笔记不参与编号，作为聚合数学基础引用：`联邦学习基本架构.pdf`（FedSGD/FedAvg/FedProx/FedNova 与密文场景零深度加权）、`联邦学习的加权方式.pdf`（7 类加权策略）。
+
+---
+
+## 1. 四维模式分类
+
+用户关心的"单密钥 / 多密钥 / 阈值"、"标准 FL / 层次 FL"、"有无可信机构"，本质是三个正交维度；我再加一个"安全目标"维度，因为这是判断一个方案"解决了什么问题"的关键。
+
+### 1.1 维度一：密钥范式（谁持有什么，能解密什么）
+
+| 范式 | 代表 | 密文形态 | 解密方式 | 优点 | 结构性代价 |
+|---|---|---|---|---|---|
+| **明文掩码（不加密）** | P1 SecAgg | 无密文，$y_u = x_u + \text{掩码}$ | 服务器去掩码得 $\sum x_u$ | 通信轻（扩展因子 1.73–1.98×）、抗掉线 | 掩码维度 $O(d)$；两两交互 $O(n^2)$；**不可与 HE 组合**；不可验证 |
+| **多密钥 HE（每方独立 $pk_i$）** | P2 CDKS、P9 CDKS-LSS | $(c_0,c_1,\dots,c_k)\in R_q^{k+1}$ | 各方贡献 $c_i s_i$，合并 | 无 TTP；私钥永不离本地 | **密文维度随参与方数 $k$ 线性增长**；需部分解密 |
+| **多密钥 HE（聚合公钥）** | P7 MASER、xMK-CKKS | $(c_0,c_1)\in R_q^2$ | 各方贡献 $c_1 s_i$，合并 | 密文体积**与 $k$ 无关**（P9 实测上传 10.4MB vs xMK 15.6MB）；服务器不能反推个体 | **聚合公钥 $\tilde b=\sum_{i=1}^N b_i$ 把参与者全集硬编码进公钥** → 任一方掉线即解密失败 |
+| **多加密密钥 + 单一解密密钥** | P5 ESAFL | 单个 $R_q$ 元素 $c_i = a_t s_i + \tilde p e_i + m_i$ | 客户端本地 $C^t - a_t s$ 一步解密 | **零交互解密**；密文体积最小；$a_t$ 由 PRPG 本地重现无需通信 | 所有客户端共持 $s$ → 任一失陷泄露全局模型；AS 知道全部 $s_i$；无掉线容忍 |
+| **单密钥 HE + 密钥托管** | P6 FedPHE、P8 SKHE | 标准 CKKS 二维密文 | 托管方/TEE 解密，或客户端共持 $sk$ | 密文小、聚合最便宜（P8：加法聚合比 xMK-CKKS 快 99.9%） | **单点妥协即全线失守**；P6 需 KDC 周期在线；P8 需 TEE |
+| **阈值密码（私钥被 Shamir 拆分）** | P4 SecFed、P9 CDKS-LSS、P10 DSVFL、P11 PPBR(SA 部分) | 视底层原语而定 | $t$-of-$N$ Lagrange 插值 | 抗掉线 + 抗共谋（$<t$ 方合谋无信息） | 份额分发 $O(N^2)$；份额正确性通常不可验证 |
+
+**关键观察 1**：这 11 篇里，"多密钥"和"阈值"不是互斥选项，而是**作用在不同环节**——多密钥作用在**加密/聚合**环节（决定谁能加密、密文多大），阈值作用在**解密**环节（决定需要多少人在线）。P9 CDKS-LSS 是二者叠加的典型：加密用 CDKS 多密钥，解密用 Shamir LSS 阈值化。
+
+**关键观察 2**：**聚合公钥是"体积友好但掉线脆弱"，独立公钥是"掉线友好但体积膨胀"**——这是多密钥 HE 在 FL 中的一对根本张力，也是本报告方案一（5.A）的切入点。
+
+### 1.2 维度二：架构（几层，聚合几级，权重怎么算）
+
+| 架构 | 论文 | 层数 | 聚合级数 | 聚合权重 | 权重是否有偏 |
+|---|---|---|---|---|---|
+| 标准 FL（端-云） | P1, P2, P4, P5, P6, P7, P9, P10 | 2 | 1 | P1/P5/P9：均匀 $\frac1N$；P6：Jaccard 相似度权重 $p_i^t$；P4/P10：数据集大小 $\delta_i$ | 均匀加权在样本量异构时**有偏** |
+| **层次 FL（端-边-云）** | **P8 SKHE** | 3 | 2 | **边层：样本数加权（原文公式 7）；云层：均匀平均 $\frac1M$（原文公式 13）** | **云层均匀平均忽略各边缘下设备数差异 → Non-IID 下收敛受损** |
+| **层次 FL（端-边-云）** | **P11 PPBR** | 3 | 2 | 边层 SA 均值 $\frac1{n_i'}$；云层 SA 均值 $\frac1{l'}$（裁剪后按 $x_i''$ 加权） | 两层均近似均匀 → 同样有偏 |
+| 通信优化（正交） | P3 ResFed | 2 | 1 | 标准 FedAvg | 不涉及 |
+
+**关键观察 3**：**两篇层次 FL（P8、P11）的第二级聚合都是均匀平均，这在数学上是有偏的**。设边缘 $j$ 下有 $n_j$ 台设备，正确的 FedAvg 全局权重应是 $\frac{n_j}{\sum_k n_k}$，而 P8/P11 用的是 $\frac1M$。当各 UAV/边缘覆盖的设备数差异大（UAV 场景几乎必然如此，见 §4.1 的覆盖半径与关联模型），这个偏差会系统性地把小覆盖区的梯度放大。这是本报告方案三（5.C）要解决的核心问题之一，也是我认为**现有层次加密 FL 最实质的逻辑缺陷**。
+
+**关键观察 4**：这 11 篇中**没有一篇把 UAV 当作边缘聚合节点**。P11 PPBR 在客户端举例里提到了"unpiloted aerial vehicles"，但 UAV 是**数据产生端**，不是聚合端。这与 §4.3 的联网调研结论一致：截至 2026 年中，"UAV 作边缘聚合节点 + 在 UAV 端执行同态聚合 + 层次 FL"三条件同时满足的工作是**空白**。
+
+### 1.3 维度三：可信机构（有 / 无，在线 / 离线，信任强度）
+
+| 信任锚 | 论文 | 机构角色 | 在线强度 | 妥协后果 |
+|---|---|---|---|---|
+| **无可信机构** | P2 CDKS、P5 ESAFL(训练期)、P7 MASER、P9 CDKS-LSS | 仅 CRS / 公钥聚合 | 训练期无 | 依赖 RLWE 与协议结构 |
+| **AS（管理服务器）** | P5 ESAFL | 初始化生成全部 $\{s_i\}$ 与 $s$，安全信道分发 | **仅初始化在线** | 知道所有密钥 → 可解密一切（但初始化后离线） |
+| **KDC** | P6 FedPHE | 每 $\tau$ 轮重新分发 $sk$、$pk$、扰动向量 $V_c,V_{s,i}$、混淆因子 $\Delta_i$ | **周期在线（强）** | 单点妥协 + 断连即停摆 |
+| **TA（可信权威）** | P8 SKHE、P10 DSVFL | P8：生成全部 CKKS/ECC 密钥、Shamir 分片；P10：生成 Paillier 密钥、分发份额、**每轮验证聚合签名** | P8 初始化；**P10 每轮在线** | P8：绝对信任根；P10：信任根 + **性能与可用性单点瓶颈** |
+| **TEE** | P4 SecFed（密钥生成 + noise refresh + 乘法 + 掉线补偿全在 TEE 内）、P8 SKHE（仅云端解密在 TEE 内） | 硬件隔离执行 | 每轮 | **master key 在 TEE 内完整存在**；SGX 侧信道（Foreshadow / Plundervolt）已被广泛证实，两篇均未讨论侧信道防护 |
+| **Key Manager** | P7 MASER | 收集各方 $pk_i$ 算聚合公钥 $\tilde b$ | 初始化 | 若与服务器共谋可操纵 $\tilde b$ |
+| **半诚实边服务器持私钥** | P11 PPBR | 边缘 $A_i$ 自持 $sk_{A_i}$ 用于解密范数量 | 每轮 | **边缘被俘获 → 该边层历史聚合可被回溯推理** |
+
+**关键观察 5**：可信机构的"在线强度"是一个被普遍低估的维度。P5 的 AS 只需初始化在线（UAV 野外可接受），P6 的 KDC 要周期在线（勉强），**P10 的 TA 要每轮在线做验证（UAV 场景基本不可接受）**。P10 是这 11 篇里唯一处理"服务器恶意"的方案，但它为此付出的代价是把验证瓶颈放在一个每轮必须可达的 TA 上——这在跨域 UAV 协同、卫星回传间歇的场景下是个结构性弱点。本报告方案一/二用"**客户端分布式重算 + 拒绝服务作为惩罚**"取代集中式验证者，正是针对这一点。
+
+### 1.4 维度四：安全目标（隐私 / 可验证 / 鲁棒 / 抗掉线）
+
+| 目标 | P1 | P2 | P3 | P4 | P5 | P6 | P7 | P8 | P9 | P10 | P11 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| 个体更新隐私 | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 抗服务器/云共谋 | ✅($<t$) | ⚠️CRS | — | ✅($N-1$+GP) | ✅($\kappa<N-1$) | ✅($|S_t|-2$+PS) | ⚠️ | ✅ | ✅($<t$) | ✅($\tau-1$) | ✅ |
+| 抗客户端掉线 | ✅($\|U_4\|\ge t$) | ❌ | — | ✅($N-2$) | ❌ | ⚠️隐式 | ❌ | ⚠️仅设备层 | ✅($t$-of-$N$) | ✅($m-\tau$) | ✅(双层 SA) |
+| **抗服务器篡改（可验证）** | ❌ | ❌ | — | ❌ | ❌ | ❌ | ❌ | ⚠️仅 hash 防"解密个体" | ❌ | ✅**唯一** | ❌ |
+| **抗拜占庭恶意更新** | ❌ | ❌ | — | ❌ | ❌ | ❌ | ⚠️(majority-vote 仅护 mask) | ❌ | ❌ | ❌ | ✅**唯一** |
+| 密文域加权聚合 | — | — | — | ✅ | ❌ | ✅ | ❌ | ✅(边层) | ❌ | ❌ | ✅ |
+| 前向安全（密钥演化） | ❌ | ❌ | — | ❌ | ❌ | ⚠️($\tau$ 轮换但需 KDC) | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+**这张表最重要的三个"唯一"**：
+
+1. **可验证性只有 P10 DSVFL 一家**。其余 10 篇全部把服务器/云设为半诚实。P8 SKHE 有一个 hash 机制，但它防的是"云偷偷拿单个设备/边缘的密文去 TEE 解密"，**不验证聚合是否正确**——云完全可以构造一个不在 hash 列表里的假聚合密文骗过 TEE。所以 P8 的可验证性是残缺的。
+2. **抗拜占庭只有 P11 PPBR 一家**，且它只覆盖"客户端拜占庭 + 少数边缘拜占庭"，**若边缘本身是拜占庭且恰好执行聚类，它可以在聚类阶段排除良性客户端，而 CLDP 和 PLHE 都无法验证边缘的聚类行为**。
+3. **前向安全 11 篇全缺**。P6 FedPHE 每 $\tau$ 轮换密钥，但轮换依赖 KDC 在线下发，不是自主演化，且轮换的是同一把共享 $sk$，被俘获后历史密文照样可解。
+
+**这三个"唯一/全缺"就是本报告 4 个新方案的选题空间**：可验证（方案一、二）、密文域鲁棒（方案二）、前向安全 + 能量自适应（方案四）。
+
+### 1.5 综合总览矩阵
+
+| | P1 SecAgg | P2 CDKS | P3 ResFed | P4 SecFed | P5 ESAFL | P6 FedPHE | P7 MASER | P8 SKHE | P9 CDKS-LSS | P10 DSVFL | P11 PPBR |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 密码原语 | Shamir+DH+PRG | MK-CKKS/BFV | 无 | EMK-BFV | 自定义 RLWE 加性 | CKKS packed | xMKCKKS | CKKS+ECC+Shamir | MK-CKKS+LSS | 阈值 Paillier | PLHE(BFV)+CLDP+SA |
+| 密钥范式 | 阈值 | 多密钥 | — | 多密钥(TEE 拆主密钥) | 多加密密钥/单解密密钥 | 单密钥+阈值混淆 | 多密钥(聚合) | 单密钥+阈值 | 多密钥+阈值 | 单密钥+阈值 | 单密钥(分层各持) |
+| 架构 | 标准 | 标准 | 标准 | 标准 | 标准 | 标准 | 标准 | **HFL 三层** | 标准 | 标准 | **HFL 三层** |
+| 可信机构 | 无 | 无 | 无 | TEE | AS(初始化) | KDC(周期) | Key Mgr | TA+TEE | 无 | TA(每轮) | 无 |
+| 服务器模型 | 半诚实/主动 | 半诚实 | — | 半诚实 | 半诚实 | 半诚实 | 半诚实 | 半诚实 | 半诚实 | **恶意** | 半诚实 |
+| 密文维度 | — | $k+1$ | — | 2 | **1** | 2 | 2 | 2 | $k+1$ | Paillier($n^2$) | 2(BFV) |
+| 部分解密交互 | — | 需全员 | — | 需 $rk_i$ | **无** | 无(共持 $sk$) | 需全员 | 边缘发份额给 TEE | $t$ 份即可 | $t$ 份即可 | SA 掩码恢复 |
+| 实测通信 | 1.73–1.98× 扩展 | 15.6MB/方(MNIST) | **省 98.4–99.1%** | 30.2MB($7\times10^6$参数) | **省 77–109× vs FATE** | 省 1.32–24.85× | 剪至 ~10% 参数 | 份额 83–86B/个 | 109MB/方(20 方) | 19.84MB($d=10^4$) | 36.4–133.2MB/轮 |
+
+---
+
+## 2. 循序渐进的技术演进链
+
+这一节是用户明确要求的重点。我不按时间平铺，而是按**"每个方案在修补上一个方案的哪个具体缺陷"**来串，并给出我从原文核实到的精确技术理由。
+
+### 2.1 主链：部分解密份额的泄露与修补
+
+这是整个领域最清晰的一条因果链，也正是用户举的例子。我把它拆到公式级别。
+
+#### 环节 1 —— P2 CDKS（2019）：多密钥 HE 成立，但份额上传即泄露个体
+
+CDKS 让 $k$ 方各自持 $s_i$，密文加法后得到 $(k+1)$ 维向量：
+
+$$ct_{\text{add}} = \Big(c_0,\; c_1,\; \dots,\; c_k\Big)\in R_q^{k+1},\qquad c_0=\sum_i c_{i,0},\quad c_j = c_{j,1}$$
+
+解密相位 $\mu = \langle ct_{\text{add}}, \mathbf s_k\rangle = c_0 + \sum_{j=1}^k c_j s_j$，各方贡献 $\mu_j = c_j s_j + e_j^*$（$e_j^*\leftarrow\phi$ 为 noise flooding）。
+
+**致命漏洞（精确推导）**：在 FL 用法中，服务器为了做加法必须先收到每个 $ct_i=(c_{i,0},c_{i,1})$。于是服务器手上同时有：
+
+- $c_{i,0} = v_i b_i + m_i + e_{i,0}$，其中 $b_i = -a s_i + e_i$
+- $c_{i,1} = v_i a + e_{i,1}$
+- 部分解密阶段收到的 $\mu_i = c_{i,1}s_i + e_i^*$
+
+而
+
+$$c_{i,0} + c_{i,1}s_i = \big(v_i(-as_i+e_i) + m_i + e_{i,0}\big) + (v_ia+e_{i,1})s_i = m_i + \underbrace{v_ie_i + e_{i,0} + e_{i,1}s_i}_{\text{小噪声}} \approx m_i$$
+
+服务器把 $\mu_i \approx c_{i,1}s_i$ 代入即得 $c_{i,0}+\mu_i \approx m_i$。**每一个客户端的个体更新被完整还原**。CDKS 本身是安全的 MKHE（用于多方推理时各方只解密联合输出），但**直接拿来做 FL 聚合是不安全的**——因为 FL 的服务器天然看到了所有 $c_{i,0}$。
+
+> **遗留问题**：① 份额上传泄露个体；② 解密必须收齐全部 $k$ 份，**任一方掉线即失败**；③ 密文维度 $k+1$，随参与方线性膨胀（$n=2^{14},\log q=438$ 时 PK 7MB、EvalKey 21MB）。
+
+#### 环节 2 —— xMK-CKKS（Ma 等，被 P7/P8/P9 共同引用为改进基线）：用聚合公钥堵住泄露
+
+xMK-CKKS 的修补极其简洁：**不让大家用各自的 $b_i$ 加密，改用聚合公钥加密**。
+
+$$\tilde b = \sum_{i=1}^N b_i = \sum_{i=1}^N(-as_i+e_i) = -a\underbrace{\Big(\sum_{i=1}^N s_i\Big)}_{s_{\text{add}}} + \sum_{i=1}^N e_i \pmod q$$
+
+$\tilde b$ 的行为"如同对应单一私钥 $s_{\text{add}}=\sum_i s_i$ 的公钥"（P9 原文 §3.2.1 的确切表述）。加密与解密变成：
+
+$$c_{i,0}=v_i\tilde b + m_i + e_{i,0},\qquad c_{i,1}=v_ia+e_{i,1}$$
+$$ct_{\text{add}}=\sum_i ct_i=(c_0,c_1)\in R_q^2,\qquad D_i = c_1\cdot s_i + e_i^*,\qquad M\approx c_0+\sum_i D_i$$
+
+**为什么漏洞被堵住了**：部分解密针对的是**聚合后的** $c_1 = \sum_j c_{j,1} = \big(\sum_j v_j\big)a + \sum_j e_{j,1} \triangleq Va + E_1$，于是
+
+$$D_i = (Va+E_1)s_i + e_i^*$$
+
+$D_i$ 里混入了**所有人**的随机数 $V=\sum_j v_j$，不再与任何单个 $c_{i,0}$ 构成 $c_{i,0}+D_i\approx m_i$ 的关系。P9 原文的 Theorem 4 给出：服务器与 $k<N-1$ 个参与方共谋，仍无法获知剩余方的模型更新。
+
+**顺带解决的两个问题**：密文从 $R_q^{k+1}$ 降到 $R_q^2$（P9 Table 实测：每方上传 xMK-CKKS 15.614MB → CDKS-LSS 10.410MB）；不再需要 CDKS 的 relinearization key $D_i$（P8 报告 KeyGen 比多密钥方案快 98.4%、加法聚合快 99.9%）。
+
+> **遗留问题（P9 原文 §3.2.2 末尾明确写出）**："the aggregated public key is constructed jointly by all participants; hence, **if even a single participant drops out during a round, decryption fails**. Moreover, the server cannot execute the Merge step until it has collected all $D_i$ from the $N$ participants."
+>
+> 本质原因：$\tilde b=\sum_{i=1}^N b_i$ 把**参与者全集硬编码进了公钥**。解密需要 $c_1\cdot\sum_{i=1}^N s_i$，少任何一个 $s_j$ 就留下一项 $c_1s_j$ 无法抵消，其幅度 $\sim q$，会彻底淹没明文。
+
+#### 环节 3 —— P9 CDKS-LSS（2026）：对部分解密值再做一次秘密共享
+
+CDKS-LSS 的修补思路是把"阈值"引入解密环节。**注意它退回使用 CDKS（各方独立 $pk_i$）而非聚合公钥**——这是它能抗掉线的前提，我核实了 Algorithm 2 第 6 行：$ct_i \leftarrow \texttt{CDKS.Enc}(w_i^r, pk_i)$，用的是自己的 $pk_i$。
+
+设公开评估点 $(\alpha_1,\dots,\alpha_N)\subset R_q$ 满足 **Exceptional Sequence 条件**（$\forall i\ne j$，$\alpha_i-\alpha_j$ 是 $R_q$ 中的 unit），阈值 $t\le N$：
+
+1. **部分解密 + 再共享**：$P_i$ 算 $\mu_i = c_{i,1}\cdot s_i\in R_q$；采样 $t-1$ 次多项式 $f_i(X)=\mu_i+\sum_{k=1}^{t-1}\lambda_{i,k}X^k$（$\lambda_{i,k}\leftarrow R_q$）；对每个 $j\ne i$ 计算 $\tilde\mu_{i,j}=f_i(\alpha_j)$ 发给 $P_j$
+2. **份额聚合**：$P_i$ 算 $\tilde\mu_i=\sum_{j=1}^N \tilde\mu_{j,i}$。记 $F(X)=\sum_{j=1}^N f_j(X)$，则 $\tilde\mu_i=F(\alpha_i)$ 且 $F(0)=\sum_j\mu_j$
+3. **服务器阈值重构**：取最先到达的 $t$ 个 $\tilde\mu_i$（集合 $\mathcal P$），Lagrange 插值
+$$\mu'_i = \tilde\mu_i\cdot\prod_{k\in\mathcal P,\,k\ne i}\frac{\alpha_k}{\alpha_k-\alpha_i},\qquad \mu = c_0+\sum_{i\in\mathcal P}\mu'_i = c_0 + F(0) = c_0+\sum_j c_{j,1}s_j \approx \sum_j m_j$$
+
+**为什么抗掉线成立**：因为用的是独立公钥，$c_0=\sum_i c_{i,0}$ 中每个 $c_{i,0}=v_ib_i+m_i+e_{i,0}$ 自带自己的 $b_i$，$c_{i,1}s_i$ 也只抵消自己那一份。掉线者 $P_j$ 的 $c_{j,0}$ 没上传、$\mu_j$ 也没进 $F$，两边**同步缺失**，剩下的聚合仍然精确等于存活者之和。这比 xMK-CKKS 的"一人掉线全盘失败"是实质进步（P9 原文："makes the scheme more robust to participant dropouts than xMK-CKKS and enables timely updates"）。
+
+**安全性升级**：LSS 层是**信息论安全**（$t-1$ 次多项式在 $t$ 个点以下无信息），不依赖计算假设。P9 Theorem 7：服务器与 $<t$ 个半诚实参与方共谋，仍不能恢复剩余诚实方的明文或部分解密值。
+
+> **遗留问题（我核实出的四条，其中第 1 条原文未讨论）**：
+>
+> **① 加密上传与份额分发之间存在"原子性缺口"（原文未讨论，本报告指出）**。CDKS-LSS 的掉线容忍只在"$P_j$ 从头到尾都没参与"时成立。若 $P_j$ **已上传 $c_{j,0}$、但在再共享阶段掉线**（没发 $\tilde\mu_{j,i}$），则：
+> $$c_0 + F(0) = \sum_i c_{i,0} + \sum_{i\ne j}c_{i,1}s_i = \Big(\sum_i m_i\Big) + \underbrace{v_jb_j + e_{j,0}}_{\text{幅度}\sim q\text{ 的随机项}} + \text{小噪声}$$
+> 那项 $v_jb_j$ 是一个幅度接近 $q$ 的随机多项式，**彻底淹没正确结果，且 CKKS 的近似解密不会报错**——所有人会得到一个"看起来正常但完全错误"的全局模型。UAV/无线场景下"上传成功但下一跳失联"是高频事件（§4.1 实测掉线率 15–18%），这个缺口的实际命中率很高。
+>
+> **② 再共享阶段是每轮 $O(N^2)$ 点对点通信**。P9 Table 实测：20 方、MNIST 规模下 $P_i\to P_j$ 每方 98.895MB，总发送 109MB / 总接收 99MB，是 xMK-CKKS（16MB / 6MB）的 **约 7–16 倍**。单份 $R_q$ 元素 5.205MB，1Gbps 链路约 41ms——在 UAV 的 10–20Mbps 链路上是 **数十秒量级**。
+>
+> **③ 份额正确性不可验证**。恶意 $P_i$ 可发送伪造的 $\tilde\mu_{i,j}$，破坏 $F(X)$ 的一致性，服务器与诚实方都无法检测。P9 原文把"strengthening from semi-honest to malicious participants"列为 future work。
+>
+> **④ Exceptional Sequence 对 $N$ 有上界约束**，$R_q=\mathbb Z[X]/(X^n+1)$ 中满足"$\alpha_i-\alpha_j$ 皆为 unit"的集合大小受限，动态增删参与方需重新协商评估点。
+
+#### 环节 4 —— P5 ESAFL（2025）：干脆让部分解密这一步消失
+
+ESAFL 走了一条完全不同的路：**不给服务器任何部分解密的机会，让客户端自己一步解密**。
+
+它的密钥结构是"**多加密密钥 + 单一解密密钥**"：AS 在初始化时生成 $\{s_i\}_{i=1}^N$ 与 $s=[\sum_i s_i]_q$，把 $s_i$ 和 $s$ **一起**通过安全信道发给客户端 $i$。加密只需单个 $R_q$ 元素：
+
+$$c_i^t = [\,a_t\cdot s_i + \tilde p\cdot e_i^t + m_i^t\,]_q \tag{P5 Eq.3}$$
+
+其中 $a_t$ 由**伪随机多项式生成器**本地重现，无需任何通信：
+
+$$a_{t+1}=\texttt{Vec2Poly}\big(\text{PRG}((x_1\oplus b_1)\|\cdots\|(x_k\oplus b_k))\big),\quad (x_1\|\cdots\|x_k)_2 = t+1,\ (b_1\|\cdots\|b_k)_2 = B \tag{P5 Eq.6}$$
+
+服务器聚合与客户端解密：
+
+$$C^t=\sum_i c_i^t = [\,a_t s + \tilde p e^t + m_{\text{add}}^t\,]_q \tag{P5 Eq.4}$$
+$$M^t = [[\,C^t - a_t s\,]_q]_p = m_{\text{add}}^t \tag{P5 Eq.5}$$
+
+**精妙之处**：密文只有 **1 个 $R_q$ 元素**（对称/单多项式形态），是所有 HE-FL 方案中体积最小的；解密是**一次模减**，零交互、零份额、零 Lagrange；$a_t$ 由 PRPG 本地生成，连"公共随机数"都不用通信。P5 实测比 FATE 省 77–109× 带宽，比 BatchCrypt 省 1.25–2×，收敛总时间比 FATE 快 204–953×，比明文 FL 仅慢 1.68–2×。
+
+**为什么服务器解不开单个密文**：$c_i^t$ 含 $a_ts_i$，服务器不知 $s_i$；只有聚合后出现 $a_t\sum_i s_i = a_ts$，才被客户端持有的 $s$ 抵消。抗共谋界 $\kappa<N-1$：$\kappa$ 个共谋者知道 $\sum_{i\in C}s_i$ 与 $s$，可得 $\sum_{i\notin C}s_i$，但只要还有 $\ge 2$ 个诚实方就无法分离出单个 $s_i$。
+
+> **遗留问题（本报告核实）**：
+> **① 无掉线容忍，且失败方式与 xMK-CKKS 同样致命**。若 $P_j$ 掉线，$C^t=\sum_{i\ne j}c_i^t$，客户端用完整 $s$ 解密得
+> $$C^t - a_ts = a_t\Big(\sum_{i\ne j}s_i-\sum_{\text{all}}s_i\Big)+m_{\text{add}} = -a_ts_j + m_{\text{add}}$$
+> 一项 $-a_ts_j$（幅度 $\sim q$）淹没结果，**且无任何检测手段**。ESAFL 用"消除份额分发"换来了极致效率，代价是把 xMK-CKKS 的掉线脆弱性原样继承了下来。
+> **② 所有客户端共持解密密钥 $s$**：任一客户端被攻破或被收买，**全局模型（含历史所有轮次的聚合密文）全部暴露**。P5 原文未把此列为风险。
+> **③ AS 是强信任根**：它知道全部 $\{s_i\}$ 与 $s$。P5 提到可用 MPC 联合生成替代 AS，但未集成、未给协议。
+> **④ 无可验证性**：恶意服务器篡改 $C^t$ 无法被发现。
+> **⑤ 仅加性同态**：不支持密文域加权，FedAvg 的 $\alpha_i$ 必须在明文域预先约定。P5 原文 future work 是"扩展至全同态以支持非线性聚合"。
+
+#### 主链总图
+
+```
+P2 CDKS (2019)  ── 多密钥 HE 成立，密文 (k+1) 维
+    │  缺陷：服务器同时握有 c_{i,0}, c_{i,1} 与份额 μ_i=c_{i,1}s_i
+    │        → c_{i,0}+μ_i ≈ m_i，个体更新被完整还原
+    │        → 且解密须收齐全部 k 份
+    ├──▶ xMK-CKKS  ── 改用聚合公钥 b̃=Σb_i，密文降到 2 维
+    │      部分解密针对聚合后的 c_1=Va+E_1，混入所有人的 v_j
+    │      → 个体还原攻击失效；抗 k<N-1 共谋
+    │      缺陷：b̃ 把参与者全集硬编码进公钥 → 一人掉线即解密失败
+    │            （P9 原文明确指出）
+    │
+    ├──▶ P9 CDKS-LSS (2026)  ── 退回独立公钥 + 对 μ_i 做 Shamir LSS
+    │      F(0)=Σμ_j，服务器收 t 个聚合份额即可 Lagrange 重构
+    │      → 阈值解密、信息论安全、抗掉线（"从头到尾没参与"的那种掉线）
+    │      缺陷：① 上传后/再共享前掉线 → v_j·b_j 污染且不可检测（本报告指出）
+    │            ② 每轮 O(N²) P2P：20 方 109MB，UAV 链路数十秒
+    │            ③ 份额不可验证，恶意方可伪造
+    │            ④ Exceptional Sequence 限制 N 与动态成员
+    │
+    └──▶ P5 ESAFL (2025)  ── 换赛道：多加密密钥 + 单一共享解密密钥
+           c_i = a_t·s_i + p̃·e_i + m_i（单多项式密文），PRPG 本地重现 a_t
+           客户端一步 M = [[C - a_t·s]_q]_p，零交互、零份额、体积最小
+           缺陷：① 一人掉线 → -a_t·s_j 污染，同样不可检测
+                 ② 全员共持 s → 任一失陷泄露全部历史聚合
+                 ③ AS 强信任根  ④ 不可验证  ⑤ 仅加性、无密文加权
+```
+
+**主链的深层结论**：从 CDKS 到 ESAFL，四步修补都在**"部分解密份额"这一个环节**上打转——先是份额泄露个体（CDKS），再是份额必须收齐（xMK-CKKS），再是份额阈值化但每轮 $O(N^2)$ 且有原子性缺口（CDKS-LSS），最后是干脆取消份额（ESAFL）。**四者没有一个做到"份额既阈值化、又不需要每轮 P2P 分发、又对上传/分发之间的掉线免疫、又可验证"**。这正是本报告方案一（5.A SAS-FL）要填的空。
+
+### 2.2 支线一：可信机构的引入、加重与消除
+
+```
+P2 CDKS (2019)      无 TTP，只需 CRS（公开随机 a）
+   │  代价：部分解密泄露（见主链）
+   ▼
+P4 SecFed (2024)    引入 TEE，且 TEE 承担越来越多职责
+   │  在 TEE 内生成 master key: secret = Σ s_i，并派生 rk_i = secret - s_i
+   │  用户用 sk_i + rk_i = secret 解密 → 抗 N-2 掉线（很巧妙）
+   │  TEE 还负责 noise refresh、密文乘法、掉线补偿密文 supEnc
+   │  代价：TEE 成为性能与安全单点；master key 在 TEE 内完整存在；仅两层架构
+   ▼
+P8 SKHE (2025)      把 TEE 的职责收窄到"只做解密"，密钥托管三分
+   │  TA 生成两对 CKKS 密钥 (pk_x,sk_x)、(pk_y,sk_y)
+   │  sk_x 用 ECC 公钥 Q 加密后给云：[[sk_x]] = (rE, sk_x + rQ)
+   │  ECC 私钥 d 用 Shamir(z,M) 拆给 M 个边缘节点 → 边缘发解密份额
+   │        DS_i = c_0·(μ_i·y_i) + e_i,  μ_i = Π_{j≠i}(-j)/(i-j),  e_i=αE, Σe_i=e
+   │  云端 TEE 内重建：sk_x = c_1 - Σ_{i=1}^z DS_i - e
+   │  sk_y 明文发给所有设备（用于解密重加密后的全局模型）
+   │  hash 校验：TEE 拒绝解密 hash 命中"任何单个设备/边缘聚合密文"的请求
+   │  代价：TA 绝对信任根；TEE 侧信道未讨论；sk_y 全员持有；
+   │        hash 只防"解密个体"，不验证"聚合是否正确"
+   ▼
+P6 FedPHE (2025)    换回单密钥 + KDC，用周期轮换与 Shamir 混淆补救
+   │  KDC 每 τ 轮通过安全信道重发 sk/pk/V_c/V_{s,i}/Δ_i
+   │  双层混淆 R = r + r_d，r=Σr_i 由 Shamir(th,|S_t|) 生成
+   │  E(g^{t+1}) = Σ_{i∈S_t} E(p_i^t)×E(g_i^t+Δ_i) = E(Σ p_i^t g_i^t + R)
+   │  → 支持密文域加权（同态乘明文凭据），这是 P5/P9/P10 都做不到的
+   │  代价：KDC 强在线；sk 被所有选中客户端持有；权重 p_i^t 由 PS 单方算、客户端不可审计
+   ▼
+P10 DSVFL (2026)    把服务器模型升到"恶意"，代价是 TA 每轮在线
+   │  阈值 Paillier：TA 生成 (pk=(n,g), sk=(λ,μ))，h=g^α mod n²
+   │  f(x)=a_0+...+a_{τ-1}x^{τ-1}, a_0=n；n_i=f(x_i)；γ_i=θ_t^{n_i} mod n²
+   │  LC 私钥 ⟨γ_i, μ, λ, α⟩；GS 无解密能力
+   │  Enc: E[[W_i]] = g^{W_i}·h^{β_i}·θ_t^{n_i} mod n²
+   │  Agg: E[[W]] = Π_i E[[W_i]] mod n²
+   │  Dec: W = ((J(E[[W]]^λ mod n²)·μ mod n) mod α)
+   │  可验证：σ_e = H_1(E[[W_e]])；Z_ej = σ_e^{z_ej}；
+   │          ϖ_e = Π_{j=1}^τ Z_ej = σ_e^{o_e(0)} = σ_e^Z，TA 验 ϖ_e ≟ σ_e^Z
+   │  → 抗 GS 恶意 + (τ-1) 个 LC 合谋伪造验证
+   │  代价：TA 每轮在线验证 = 可用性与性能单点；Paillier 模幂重（ρ=1024 时单密文 ~2048bit）
+   ▼
+P11 PPBR (2026)     彻底去 TEE / 去 KDC，代价是把私钥交给边缘
+   │  云持 sk_A（解 [·]_A），边缘 A_i 各持 sk_{A_i}（解 [·]_{A_i}）
+   │  客户端不持任何服务器私钥；SA 用 Shamir(t,n) + DH + PRG 做掩码
+   │  → 11 篇中唯一同时抗拜占庭（客户端 + 少数边缘）的 HFL 方案
+   │  代价：边缘被俘获 → sk_{A_i} 泄露 → 该边层历史聚合可回溯；
+   │        PLHE 密文 36.4–133.2MB/轮；SA 是 O(n'²)（n'=500,m=100k 时边层 14.67s，10% 掉线 62.24s）
+```
+
+**支线的深层结论**：可信机构在"**强度**"和"**在线时长**"两个轴上被反复权衡，但**从未有人同时做到"机构完全离线 + 服务器恶意模型 + 客户端可自主验证"**。P10 拿到了恶意服务器模型，代价是 TA 每轮在线；P9 拿到了机构离线，代价是服务器只能半诚实；P11 拿到了无 TEE 无 KDC，代价是边缘持私钥。本报告方案二（5.B VRSA-FL）用"**筛选输入完全公开 + 算法确定性 + 全体客户端本地重算 + 拒绝服务作为惩罚**"实现了"机构离线 + 服务器/UAV 恶意 + 可验证"的组合。
+
+### 2.3 支线二：效率（通信与计算）
+
+```
+P2 CDKS (2019)         基准：密文 (k+1) 维，EvalKey 21MB，4 方 mult+relin 521ms
+   │
+   ├─▶ P3 ResFed (2024)   与密码正交的纯压缩：预测器 + 残差 + Top-K + 1-bit 量化 + Huffman
+   │      预测器 f_predict(L^{t-1}, Ĝ^{t-1}, ŵ^t)：M=0 stationary / M>0 linear
+   │      实测省 98.43%–99.10%，FEMNIST 压缩比 1023.60×（vs QSFL 889.72×）
+   │      收敛：Theorem 2 给出 O(1/√T)，与 FedSGD 同阶
+   │      局限：全程明文操作，**无法在密文上执行**（作者未讨论加密兼容性）
+   │
+   ├─▶ P7 MASER (2025)    共识剪枝 + 分片，把 MKHE 压到实用
+   │      L1-norm 排序取 top-κ% → 本地 mask M_i^t
+   │      服务器多数投票：M^t(j,k)=1 iff (1/m)Σ_i M_i^t(j,k) ≥ 0.5
+   │      切片 λ=n/2 并行加密
+   │      实测：κ=10% 时 CIFAR-10 提速 7.80–8.29×、MNIST 3.03×，精度 99.18%（vs vanilla 99.37%）
+   │      局限：全局 mask 统一 → 所有客户端被迫用同一稀疏度；mask 本身明文（CIFAR-10 每方 11.67MB）
+   │
+   ├─▶ P6 FedPHE (2025)   打包 + pack-level top-ζ + sketch 选择
+   │      poly modulus 8192，packing size B=4096
+   │      ζ=70% 时通信省 2.10–2.17×、精度损失 ≤1.45%；ζ=10%（MNIST/FMNIST）省 8.48–10.39×
+   │      LSH sketch + 扰动 → 选最快代表，straggler 效应降 1.89–2.78×
+   │      整体：训练提速 2.45–6.56×，通信省 1.32–24.85×
+   │      局限：需 KDC 协调权重；poly 8192 + TenSEAL 需 GPU 级算力
+   │
+   └─▶ P10 DSVFL (2026)   Ftop-k 细粒度选择 + 误差反馈
+          ∇ω_i^t = ∇ω̂_i^t + Y_i^t，  Y_i^{t+1} = ∇ω_i^t - Ftop-k(∇ω_i^t)
+          r=0.01 时精度比朴素 top-k 提升最高 49.14%
+          客户端计算成本降 48%–63%，通信降 33%–49%
+          局限：稀疏在客户端本地做，GS 无法验证稀疏正确性
+```
+
+**效率支线的深层结论**：**压缩与加密至今是两条平行线**。P3 ResFed 的残差预测器需要明文轨迹，P7 MASER 的全局 mask 需要多数投票协商，P6 FedPHE 的 pack-level top-ζ 需要 KDC 协调权重，P10 的 Ftop-k 不可验证。**没有一篇做到"各参与方按自己的资源预算独立决定加密哪些部分，而密文聚合仍然正确"**——这正是本报告方案四（5.D EFS-HFL）的"块级索引对齐异构稀疏"要解决的。
+
+### 2.4 支线三：鲁棒性（从掉线到拜占庭到可验证）
+
+```
+P1 SecAgg (2017)   抗掉线的奠基
+   │  y_u = x_u + PRG(b_u) + Σ_{u<v}PRG(s_uv) - Σ_{v<u}PRG(s_vu)  (mod R)
+   │  Unmasking: Σ_{u∈U_3}x_u = Σ_{u∈U_3}y_u - Σ_{u∈U_3}p_u + Σ_{u∈U_3, v∈U_2\U_3}p_{v,u}
+   │  阈值：|U_4| ≥ t；纯服务器敌手 t ≥ ⌊n/2⌋+1；服务器+n_C 客户端共谋 t ≥ ⌊2n/3⌋+1
+   │  复杂度：user O(n²+mn) 计算 / O(n+m) 通信；server O(mn²) 计算 / O(n²+mn) 通信
+   │  实测：500 用户 100K 条目，0% 掉线 client 849ms / server 2018ms；30% 掉线 server 143s
+   │  作者承认的局限：不验证输入合法性（恶意方可提交越界值扭曲结果）；
+   │                  不检测恶意滥用（畸形消息致大量诚实用户 abort）
+   │  结构局限：明文域掩码，**不可与 HE 组合**；O(n²) 交互；不可验证 Σ 是否正确；不抗投毒
+   ▼
+P4 SecFed (2024)   把抗掉线推到 N-2（用 rk_i = secret - s_i 补偿掉线者的密钥贡献）
+   │  但仍不抗拜占庭（作者明确列为 future work）
+   ▼
+P9 CDKS-LSS (2026) 把抗掉线推到"部分解密份额"环节（t-of-N Lagrange）
+   │  但仍不抗拜占庭、不可验证
+   ▼
+P10 DSVFL (2026)   首次把"服务器恶意"纳入模型，给出可验证性 + 掉线容忍
+   │  ϖ_e = Π_j Z_ej = σ_e^{o_e(0)} = σ_e^Z，TA 独立校验
+   │  但作者 future work 明确："defend against Byzantine / model poisoning attacks" → 仍不抗投毒
+   ▼
+P11 PPBR (2026)    首次把"抗拜占庭"带进层次 FL，双层过滤
+      边层（算法 2 CC）：符号统计三元组 → CLDP 扰动 → trimmed k-means → 取 top-b 大簇
+        CLDP 密度：f(y|s) = λ·exp(-ε_χ·min(‖y-s‖₂, L))，λ=[V_L+e^{-ε_χ L}(2dL'^d-V_L)]^{-1}
+        d=3（正号/负号/零号比例），k=2, b=1, l=8, L=6, L'=7
+      云层（算法 4 EF）：PLHE 密文域算范数
+        [‖m_i‖₂²]_{A_i} = Add([‖m'_i‖₂²]_{A_i}, [(x_i)²/2]_{A_i}, Mult([2m'_i]_{A_i}, x_i))
+        （因 m=m'+x ⇒ ‖m‖²=‖m'‖²+‖x‖²+2m'·x）
+        用随机 x'_i 盲化 → 边缘解密开方 → 云得 ‖m_i‖₂（云只知范数不知 m_i）
+        中位数 M = median({‖m_i‖₂})，剔除 ‖m_i‖₂ ∉ [M-θ, M+θ]
+        保留 |A^(T)| = l' = min{(1-β)l, l_s}（已知 β）或 min{0.5l, l_s}（未知 β）
+      云层（算法 5 GA）：范数中位数裁剪 x''_i = M/‖m_i‖₂（用 [x'_i·M]_{A_i} 掩护比值）
+      动量：m^{(r+1)} = φ·m^{(r)} + (1-φ)·w^{(r+1)}，φ=0.9；全局步长 ζ=0.0125
+      去噪：m_a = m''_a + Σ_{A_i∈A^(T)} x''_i·x_i
+      评估的 6 种攻击：label flipping / sign flipping / Gaussian / ALIE / IPM / MinMax
+      β=0.3、α=0.5 下精度最接近理论最优（MNIST 95.66%、F-MNIST 88.13%）
+      Theorem 2：CLDP 扰动质心无偏 E(y_κ)=s_κ，
+        E(‖y_κ-s_κ‖₂²) ≤ 3L²(e^{ε_χ c_L}-1)/[5|C_κ|(e^{ε_χ c_L}+1)] + L²/|C_κ|
+      局限：边层若拜占庭可操纵聚类（CLDP/PLHE 无法验证边层行为）；
+            PLHE 仅线性 → 范数计算需交互解密，引入额外轮次与边缘解密能力（扩大攻击面）；
+            SA 是 O(n'²)；不可验证云的聚合
+```
+
+**鲁棒支线的深层结论**：**"抗掉线"、"抗拜占庭"、"可验证"三件事至今没有任何一篇同时做到**。P10 有可验证 + 抗掉线但不抗投毒；P11 抗投毒 + 抗掉线但不可验证且边层信任脆弱；P9 抗掉线但两者都无。而且更深的矛盾是：**HE 隐藏了梯度内容，使得 Krum / Median / TrimmedMean / 余弦相似度这类基于统计的拜占庭检测无法在密文域执行**。P11 的破解办法是"把范数计算做成密文域 + 盲化交互解密"，但这引入了额外的边缘解密能力和通信轮次。**"如何在不解密、不引入边缘解密能力的前提下做鲁棒筛选"是一个真问题**，本报告方案二用"聚合前基于公开 LDP 指纹的确定性共识排除"给出了一个零交互、零深度、天然可验证的答案。
+
+### 2.5 支线四：架构（从端-云到端-边/UAV-云）
+
+```
+P1/P2/P4/P5/P6/P7/P9/P10  端-云两层（标准 FL）
+   │  所有客户端直连云，回传带宽 = O(N·密文)
+   ▼
+P8 SKHE (2025)  端-边-云三层，IoT 场景
+   │  边层：样本数加权部分聚合（公式 7）；云层：均匀平均（公式 13）
+   │  回传带宽降到 O(M·密文)，M = 边缘数
+   │  缺陷：云层均匀平均有偏（见关键观察 3）；边缘掉线未覆盖；无拜占庭防御
+   ▼
+P11 PPBR (2026)  端-边-云三层，移动网络场景
+   │  客户端举例含"智能汽车/无人机/便携医疗设备"，但 **UAV 是数据端不是聚合端**
+   │  边层 SA 均值 + 云层 SA 均值，两级都近似均匀 → 仍有偏
+   │  缺陷：边层持 sk_{A_i}；PLHE 密文 36.4–133.2MB/轮；SA 边层 14.67–62.24s
+```
+
+**架构支线的深层结论**：两篇层次方案的**第二级聚合都是均匀平均**，且**边缘节点都持有可用于解密的秘密**（P8 边缘持 ECC 私钥 Shamir 份额 $y_i$，P11 边缘持 $sk_{A_i}$）。在 UAV 场景下这两个都是硬伤：UAV 覆盖的设备数天然极不均匀（§4.1 的覆盖半径 158m + 概率 LoS 模型决定了关联数波动剧烈），且 UAV 物理暴露、被俘获概率远高于机房里的边缘服务器。本报告方案三（5.C MUFA-HFL）针对这两点做了"**全局样本数整数预缩放 → 两级纯密文加法 → 与关联关系完全解耦的精确无偏**"和"**UAV 零私钥**"的设计。
+
+### 2.6 每篇的"一句话模式 + 解决了什么 + 遗留了什么"
+
+| # | 一句话模式 | 解决了 | 遗留了 |
+|---|---|---|---|
+| P1 SecAgg | "不加密数据，只让对方拿到求和" | 明文域安全求和 + 抗掉线 | $O(n^2)$ 交互、不可验证、不抗投毒、**不可与 HE 组合** |
+| P2 CDKS | "多密钥全同态，但最后一步各方交出私钥贡献" | 无 TTP 的多方密文计算 | **份额上传即泄露个体**、须全员在线、密文 $k+1$ 维 |
+| P3 ResFed | "传之前先用预测器把要传的压进残差" | 通信省 ~99%，收敛同阶 | 无隐私、明文操作**不可搬到密文域** |
+| P4 SecFed | "把多密钥的重活全塞进 TEE" | 抗 $N-2$ 掉线、无近似误差 | TEE 单点、master key 完整存在、仅两层、不抗拜占庭 |
+| P5 ESAFL | "加性就够了；让所有人共享解密密钥，一步减掉" | **零交互解密**、密文最小（1 个 $R_q$ 元素）、无需通信公共随机数 | **一人掉线即污染且不可检测**、全员共持 $s$、AS 强信任根、不可验证、仅加性 |
+| P6 FedPHE | "打包进单密钥，加稀疏与混淆，KDC 定期换锁" | **密文域加权**、抗 straggler、通信省 1.32–24.85× | KDC 强在线、$sk$ 广泛持有、权重不可审计、GPU 级算力 |
+| P7 MASER | "MKHE 太贵？先共识剪枝再分片" | MKHE 提速 3–8× 至实用 | 部分解密仍直传、需 Key Manager、全员在线、**全局统一稀疏度** |
+| P8 SKHE | "单密钥安全靠 ECC + Shamir + TEE 三件套" | 三层架构、边缘不持 CKKS 私钥、加法聚合快 99.9% | TA 绝对信任根、TEE 侧信道、**云层均匀平均有偏**、hash 只防解密个体、$sk_y$ 全员持有 |
+| P9 CDKS-LSS | "部分解密值自己也要再做一次秘密共享" | **阈值解密 + 信息论安全 + 抗掉线**、无 TTP | **上传/再共享之间的原子性缺口（不可检测的污染）**、每轮 $O(N^2)$（20 方 109MB）、份额不可验证、Exceptional Sequence 限制 $N$ |
+| P10 DSVFL | "Paillier 私钥拆成份额，再让 TA 验一条签名等式" | **服务器恶意模型**、可验证、抗掉线、Ftop-k 提精度 49.14% | **TA 每轮在线 = 单点瓶颈**、Paillier 模幂重、不支持密文加权、不抗投毒 |
+| P11 PPBR | "边层先聚类筛人，云层再密文域筛边" | **唯一抗拜占庭的 HFL**、双层过滤、Non-IID 友好、无 TEE 无 KDC | 边层持 $sk_{A_i}$（俘获即回溯）、**边层拜占庭可操纵聚类且不可验证**、PLHE 密文 36–133MB、SA 边层 14.7–62.2s、两级均匀平均有偏 |
+
+---
+
+## 3. RLWE / CKKS 预备：统一记号与噪声预算
+
+第 5 章的 4 个方案全部基于 RLWE 派密码体制（与 P2/P5/P7/P9 一致），本节固定记号，后文不再重复定义。
+
+### 3.1 环与困难假设
+
+- **多项式环**：$R = \mathbb Z[X]/\Phi_M(X)$，$\Phi_M(X)=X^n+1$，$n=2^{k}$ 为 2 的幂（P2 用 $n\in\{2^{13},2^{14},2^{15}\}$，P6 用 $n=8192=2^{13}$，P11 用 $n=2048$）
+- **系数模环**：$R_q = \mathbb Z_q[X]/(X^n+1)$；$R_q^{\,k}$ 表示 $k$ 个 $R_q$ 元素构成的向量
+- **模数链**：$q = q_0 q_1 \cdots q_L$，$L$ 为乘法深度预算；$\Delta$ 为 CKKS 缩放因子
+- **误差分布**：$\chi$（密钥分布，常取三元 $\{-1,0,1\}$ 或离散高斯）、$\psi$（加密噪声，方差 $\sigma^2$）、$\phi$（noise flooding 分布，方差**显著大于** $\psi$）
+- **RLWE 假设**：给定 $(a, b=as+e)$，其中 $a\leftarrow U(R_q)$、$s\leftarrow\chi^n$、$e\leftarrow\psi^n$，区分该分布与 $U(R_q^2)$ 是困难的。P2 的多密钥评估密钥额外需要 **circular security**（用 $s_i$ 加密 $s_i$ 自身）
+- **CRS 模型**：P2/P9 假设所有方共享公开随机 $a\leftarrow U(R_q^d)$
+
+### 3.2 单密钥 CKKS
+
+**KeyGen**：$s\leftarrow\chi^n$，$a\leftarrow U(R_q)$，$e\leftarrow\psi^n$，则
+$$pk = (b, a) = (-as+e,\; a),\qquad sk = (1, s)$$
+
+**Encode / Decode**（复数向量 $\mathbf z\in\mathbb C^{n/2}$ 与多项式互转，$\Delta$ 为缩放因子）：
+$$\texttt{Encode}(\mathbf z) = \text{Can}^{-1}\big(\lfloor\Delta\cdot\mathbf z\rceil\big)\in R,\qquad \texttt{Decode}(m) = \tfrac1\Delta\cdot\text{Can}(m)\in\mathbb C^{n/2}$$
+
+**Enc**（$v\leftarrow\chi$，$e_0,e_1\leftarrow\psi^n$，$m=\texttt{Encode}(\mathbf z)$）：
+$$ct = (c_0, c_1) = \big(vb + m + e_0,\;\; va + e_1\big)\in R_q^2$$
+
+**Dec**：
+$$c_0 + c_1 s = (v(-as+e)+m+e_0) + (va+e_1)s = m + \underbrace{ve + e_0 + e_1s}_{\text{噪声}\;\ll\;\Delta} \;\approx\; m$$
+
+**同态加法**（零乘法深度）：
+$$ct + ct' = (c_0+c_0',\; c_1+c_1'),\qquad \langle ct+ct', sk\rangle = \langle ct,sk\rangle + \langle ct',sk\rangle$$
+
+**密文-明文标量乘**（P8 的边层样本数加权、P11 的 PLHE Mult 都用这个）：给定明文多项式 $p$，
+$$p\cdot ct = (p c_0,\; p c_1),\qquad \langle p\cdot ct, sk\rangle = p\cdot\langle ct,sk\rangle$$
+噪声放大 $|p|$ 倍，消耗 1 层模数（需 Rescale）。
+
+**密文-密文乘 + Relinearization**（本报告 4 个方案**均不使用**，理由见 §3.5）：张量积得 $(c_0c_0', c_0c_1'+c_1c_0', c_1c_1')$，再用评估密钥 $evk=(-a's+e'+Ps^2,\;a')$ 压回二维。
+
+**Rescale / ModSwitch**：Rescale 把 $c$ 除以 $q_\ell$ 并四舍五入，使 $\Delta\to\Delta/q_\ell$，噪声同比例下降；ModSwitch 只降模数不缩放。
+
+### 3.3 多密钥 CKKS（P2 CDKS）
+
+$k$ 方各持 $s_i$，密钥向量 $\mathbf s_k=(1, s_1,\dots,s_k)$，密文 $ct=(c_0,c_1,\dots,c_k)\in R_q^{k+1}$，解密相位
+$$\mu = \langle ct, \mathbf s_k\rangle = c_0 + \sum_{i=1}^k c_i s_i$$
+加法逐分量；部分解密 $D_i = c_i s_i + e_i^*$（$e_i^*\leftarrow\phi$）；合并 $M\approx c_0+\sum_i D_i$。
+
+**Relinearization Method 2**（P2 推荐，噪声 $V_2\approx k^2n^2\sigma^2\cdot dV_{\mathbf g}$，优于 Method 1 的 $d^2V_{\mathbf g}^2$）：
+$$c'_{i,j}=\langle \mathbf g^{-1}(c_{i,j}),\, b_j\rangle,\qquad (c'_0,c'_i)\mathrel{+}= \mathbf g^{-1}(c'_{i,j})\cdot[d_{i,0}\,|\,d_{i,1}],\qquad c'_j\mathrel{+}=\langle \mathbf g^{-1}(c'_{i,j}),\, d_{i,2}\rangle$$
+
+### 3.4 Shamir LSS over $R_q$（P9）
+
+- **Exceptional Sequence**（P9 Definition 1）：$(\alpha_1,\dots,\alpha_N)\subset R_q$ 满足 $\forall i\ne j$，$\alpha_i-\alpha_j$ 是 $R_q$ 中的 unit（可逆元）。这是 Lagrange 系数 $\frac{\alpha_k}{\alpha_k-\alpha_i}$ 在 $R_q$ 上有定义的前提
+- **Share**：$t-1$ 次多项式 $f(X)=s+\sum_{k=1}^{t-1}\lambda_kX^k$，$\tilde s_i=f(\alpha_i)$
+- **Combine**（P9 §2 的确切形式）：任意 $|T|\ge t$，
+$$S = \sum_{i\in T}\tilde s_i\cdot\prod_{k\in T,\,k\ne i}\frac{\alpha_k}{\alpha_k-\alpha_i}\in R_q$$
+- **信息论安全**：少于 $t$ 个份额对 $S$ 无任何信息（不依赖计算假设）
+
+### 3.5 本报告 4 个方案的共同设计约束（及理由）
+
+| 约束 | 理由 |
+|---|---|
+| **只用同态加法 + 密文-明文标量乘，不用密文-密文乘** | ① P2 实测：4 方 mult+relin 需 521ms（$n=2^{14},\log q=438$），8 方 1845ms，随 $k^2$ 增长，UAV/边缘算力不可承受；② 密文-密文乘需评估密钥 $evk$，P2 Set-II 下 21MB，P8 报告单密钥 KeyGen 比多密钥快 98.4% 正是因为省了 $evk$；③ 消耗乘法深度 → 拉长模数链 → 密文膨胀，与 UAV 链路预算冲突（§4.1）；④ **FL 聚合本身只需加权求和**，权重 $\alpha_i$ 是客户端本地已知的明文标量，可预缩放（见下） |
+| **权重预缩放（客户端本地明文乘）** | 客户端计算 $\tilde\Delta_i = \alpha_i\cdot\Delta_i$ 后再加密，服务器/UAV 只做**纯密文加法**即得 $\sum_i\alpha_i\Delta_i$。乘法深度 **0**，无需 Rescale。这正是中文笔记《联邦学习基本架构》给出的"密文场景（CKKS）零深度加权"路线，也是 P8 边层聚合（原文公式 7）的做法。本报告 5.C 会证明：**只要边层不归一化、云层纯加法，两级聚合精确等于全局 FedAvg，与层次划分无关** |
+| **零乘法深度的鲁棒性** | P11 需要在密文域算范数 $\|m_i\|_2^2=\|m'_i\|^2+\|x_i\|^2+2m'\!\cdot\!x_i$，其中 $2m'\!\cdot\!x_i$ 是密文-明文内积，需 Mult + 交互解密 + 开方，引入额外轮次与边缘解密能力（扩大攻击面）。本报告 5.B 改用"**公开低维 LDP 指纹 + 明文域确定性排除**"，把鲁棒判定整体移出密文域，零交互零深度 |
+| **模数链最小化** | 目标 $L=1$（仅一次 ModSwitch）或 $L=0$，使密文体积 $\approx 2n\log q/8$ 字节。P9 实测参数 $n=2^{14},\log_2q=318$ 时单个 $R_q$ 元素 = 5.205MB，二维密文 ≈ 10.4MB，与 P9 Table 的"每方上传 10.410MB"吻合 |
+
+### 3.6 噪声预算（4 个方案的正确性判据）
+
+聚合 $N$ 个密文后的解密误差：
+$$c_0 + \sum_i D_i - \sum_i m_i = \underbrace{\sum_i v_ie_i}_{(1)} + \underbrace{\sum_i e_{i,0}}_{(2)} + \underbrace{\sum_i s_ie_{i,1}}_{(3)} + \underbrace{\sum_i e_i^*}_{(4)}$$
+
+各项量级：(1)(2)(3) 为 $O(N\sigma)$，(4) 为 $O(N\sigma^*)$（noise flooding，$\sigma^*\gg\sigma$）。正确解密要求
+$$\Big\|\sum_i m_i\Big\|_\infty + \text{总噪声} < \frac{q}{2}\quad\Longrightarrow\quad N\cdot\Delta\cdot\|w\|_\infty + N\sigma^* \ll \frac q2$$
+
+**这条不等式是本报告所有方案的硬约束**，它决定了：① 单密文能打包多少参数（$\Delta$ 与 $\|w\|_\infty$ 的乘积）；② noise flooding 能开多大（$\sigma^*$ 越大越安全但越占预算）；③ 聚合规模 $N$ 的上限。**5.D 会把这条不等式直接接入 UAV 能量模型，给出"模数链长度 ↔ 密文体积 ↔ 传输能耗 ↔ 可聚合规模"的闭式权衡。**
+
+---
+
+## 4. UAV / Edge-assisted FL：真实约束与值得研究的点
+
+本章的数据来自联网调研（论文标题、出处、链接均已标注）。凡属我的定性推断而非文献确证，标注为「**判断**」。
+
+### 4.1 物理与链路约束（这些数字直接决定方案可行性）
+
+#### (a) 空对地信道
+
+**概率性 LoS/NLoS 路径损耗**（UAV-FL 文献最广泛采用）：
+$$P_{\text{LoS}}(\theta)=\frac{1}{1+a\exp\!\big(-b(\theta-a)\big)},\qquad PL = P_{\text{LoS}}\cdot PL_{\text{LoS}} + (1-P_{\text{LoS}})\cdot PL_{\text{NLoS}}$$
+环境参数：密集城区 $a\approx9.6,b\approx0.28$；郊区 $a\approx4.88,b\approx0.43$。[Modeling Air-to-Ground Path Loss for Low Altitude Platforms, Al-Hourani et al., IEEE Globecom 2014](https://ieeexplore.ieee.org/document/7037125) ⚠️公式被后续论文广泛引用，原始链接未逐一确证
+
+**自由空间 LoS 简化模型**（UAV 聚合类工作常用）：
+$$h_m[n]=\sqrt{\varrho\cdot d_m^{-2}[n]}\cdot\vartheta_m[n],\qquad d_m[n]=\sqrt{z^2+\|u[n]-v_m\|^2}$$
+典型仿真参数：参考距离功率增益 $\varrho=-60$ dB，飞行高度 $z=50$ m，噪声功率 $\sigma^2=-90$ dBm，设备发射功率 $P_0=0.32$ W，**UAV 覆盖半径阈值 $d_{\text{thr}}=158$ m**。[UAV-Assisted Hierarchical Aggregation for Over-the-Air Federated Learning, Zhong et al., IEEE GLOBECOM 2022](https://arxiv.org/html/2209.11624v1)
+
+**仰角依赖的路径损耗指数 + 上行速率**：
+$$\alpha_i=\frac{a_1}{1+a_4\exp(a_3(\theta_i-a_4))}+a_2,\qquad R_{i,BS}=B_i\log_2\!\Big(1+\frac{P_i|h_i|^2}{B_i\sigma^2}\Big)$$
+典型参数：带宽 $B=10$ MHz，发射功率 $P_i=0.28$ W。[Towards Reliable Participation in UAV-Enabled Federated Edge Learning on Non-IID Data, Cheriguene et al., IEEE OJIM 2024](https://arxiv.org/html/2312.10411v1)
+
+> **对方案的含义**：设备发射功率仅 0.28–0.32 W，覆盖半径 158 m，带宽 10 MHz 量级。**单个 10.4MB 的 CKKS 密文在此链路上的传输时间是秒级**，而 CDKS-LSS 每方每轮 109MB 是**分钟级**——这就是我判定 P9 在 UAV 场景不可行的量化依据。
+
+#### (b) UAV 能耗
+
+**旋翼 UAV 推进功率**（三段式：叶型功率 + 诱导功率 + 寄生阻力功率）：
+$$P(v)=P_b\Big(1+\frac{3\|v\|^2}{U_{\text{tip}}^2}\Big)+P_i\sqrt{\sqrt{1+\frac{\|v\|^4}{4v_0^4}}-\frac{\|v\|^2}{2v_0^2}}+\tfrac12 d_0\rho sA\|v\|^3$$
+20 N 级四旋翼典型值：**叶型功率 $P_b\approx79.86$ W，诱导功率 $P_{\text{ind}}\approx88.63$ W，悬停总功率 $\approx126$–$170$ W（含通信载荷），最优巡航功率 $\approx126$ W**；每小时能耗旋翼 ~483 kJ/h。[On the Energy Consumption of Rotary Wing and Fixed Wing UAVs in Flying Networks, Ribeiro et al., WoNS 2025](https://arxiv.org/html/2406.19009v1)
+
+> **对方案的含义**：悬停 126–170 W 意味着**任何增加 UAV 悬停时长的操作都有直接的焦耳成本**。P11 PPBR 的边层 SA 在 $n'=500$、$m=100$k 时耗时 14.67 s（10% 掉线时 62.24 s），在 UAV 上折算为 **1.9–10.6 kJ/轮的纯悬停能耗**，这还不算 PLHE 运算本身。**判断**：UAV 端的密码运算必须做到"秒级以内"，否则能耗不可接受。
+
+#### (c) 机载算力与实测 HE 开销
+
+- **NVIDIA Jetson AGX Orin 上的 CKKS 实测**：Encode+Encrypt 2.5±0.3 ms、同态矩阵乘/加（$n=8192$）5.8±0.6 ms、激活函数近似（3 阶 Chebyshev）1.7±0.2 ms、Decode+Decrypt 2.4±0.3 ms，**合计 ≈12 ms/sample**。[A privacy preserving intrusion detection framework for IIoT in 6G networks using HE and GNN, Nature Sci. Rep. 2025, Table 10](https://www.nature.com/articles/s41598-025-32087-7/tables/10)
+- **轻量 HE（CKKS + Paillier）在边缘设备**：推理延迟 220 ms、内存 85 MB、能耗 40 mWh、准确率 91.8%。[Lightweight HE for Privacy-Preserving ML on Edge Devices, ICOSEC 2025](https://ieeexplore.ieee.org/document/11459742/)
+- **机载计算硬件档位**：Jetson Orin Nano 最高 67 TOPS / 7–25 W；Jetson Nano 0.5 TFLOPS / 5–10 W。UAV-FL 论文常设 CPU 频率 $\gamma_i\in[10^6,10^8]$ Hz，每样本 $\kappa=7\times10^4$ cycles。[NVIDIA Jetson 产品线](https://www.nvidia.cn/autonomous-machines/embedded-systems/)；[Cheriguene et al., IEEE OJIM 2024](https://arxiv.org/html/2312.10411v1)
+- **密文大小**：BFV 单密文 ~2.1 MB；CKKS 在 $n=8192,L=3$ 时单密文 ~1–3 MB（⚠️具体值依参数而异，此处为文献报告范围）。[Batched and Hybrid HE Performance, IEEE 2025](https://ieeexplore.ieee.org/abstract/document/11313179/)
+
+> **对方案的含义**：**"UAV 端跑 CKKS 聚合"在 Jetson Orin 级硬件上是可行的**（加法聚合 5.8 ms 量级），但 P6 FedPHE 的 poly modulus 8192 + TenSEAL + GPU 依赖、P2 CDKS 的 mult+relin 521–1845 ms 都超出了合理档位。**判断**：UAV 端应只承担"密文加法 + 明文域确定性算法"，把 rescale/bootstrapping/乘法全部推到云端——这正是 5.C/5.D 的层级 HE 分配原则。
+
+#### (d) 主流替代做法（当 UAV 算力不足时）
+
+1. **仅用加性 HE**（Paillier / 加性 RLWE），开销比 CKKS 低 1–2 个数量级，足以支撑 FedAvg 加权聚合 [VPFL, 2023](https://opus.lib.uts.edu.au/bitstream/10453/174875/2/VPFL%20A%20verifiable%20privacypreserving%20federated%20learning%20scheme%20for%20edge.pdf)
+2. **选择性/稀疏加密**：MaskCrypt 只加密 top-k 重要梯度，通信与计算降 90%+ [MaskCrypt, IEEE TIFS 2024](https://ieeexplore.ieee.org/abstract/document/10506637/)
+3. **HE 卸载到云/地面站**：UAV 仅做明文聚合或轻量掩码 [Secure Hierarchical FL for UAV Edge Computing, 2026](https://ieeexplore.ieee.org/abstract/document/11628559/)
+4. **Hybrid HE**：只对种子加密一次而非逐维加密，开销不随梯度维度增长 [Federated Learning: An approach with Hybrid HE, arXiv 2509.03427, 2025](https://arxiv.org/abs/2509.03427)
+
+### 4.2 FL 层面的挑战（含实测掉线率）
+
+| 挑战 | 实测数据 / 代表工作 | 对加密方案的额外压力 |
+|---|---|---|
+| **掉线与 straggler** | Random Selection 下掉线率 $\chi_d\approx15$–$18\%$，可靠性选择方案降至 $3.7$–$5\%$；训练+上传延迟 20–200 ms；IQR 过滤消除 straggler [Cheriguene et al., IEEE OJIM 2024](https://arxiv.org/html/2312.10411v1) | **15–18% 的掉线率意味着 CDKS-LSS 的"原子性缺口"每轮几乎必然被触发**（§2.1 环节 3 的遗留问题①）；xMK-CKKS/ESAFL 的"一人掉线即污染"更是直接失效 |
+| **UAV 移动性与关联变化** | Zhong 2022：UAV 按轨迹分区服务，每时隙只聚合 $d_{\text{thr}}=158$ m 内设备；全局聚合系数 $\zeta[n]$ 由 MSE 最小化联合优化以保证无偏 [Zhong et al., GLOBECOM 2022](https://arxiv.org/html/2209.11624v1) | $\zeta[n]$ 依赖**明文梯度统计**（样本方差），HE 下无法计算 → **开放问题：密文域如何保持无偏加权** |
+| **Non-IID** | Distribution 2（每 UAV 仅含 2 类）下 CIFAR-10 准确率从 IID 的 ~57% 降至 ~39% [Cheriguene et al., 2024](https://arxiv.org/html/2312.10411v1)；P11 用 Dirichlet $\alpha$ 建模，$\alpha=0.1$ 时 Median 降 3.60%、Multi-Krum 降 2.06% | **P8/P11 的云层均匀平均在 Non-IID + 覆盖不均下偏差被放大**（§1.2 关键观察 3） |
+| **能耗与能量收集** | Multi-UAV FL 联合优化轨迹与 WPT 功率分配 [Multi-UAV-Assisted FL for Energy-Aware Distributed Edge Training, IEEE TNSM 2024](https://ui.adsabs.harvard.edu/abs/2024ITNSM..21..280T/abstract)；UAV-FL 中引入 SWIPT，终端从 UAV 信号采集能量 [基于无人机辅助联邦边缘学习通信系统的安全隐私能效研究, 电子与信息学报 2025](https://jeit.ac.cn/cn/article/doi/10.11999/JEIT240847) | **开放问题：能量预算约束下的 HE 操作调度**（加密多少维、模数链多长） |
+| **轨迹优化与部署** | SCA + AO 联合优化轨迹与资源分配以最小化 FL 延迟 [Latency Minimization for UAV-Enabled FL, arXiv 2412.07428, 2024](https://arxiv.org/abs/2412.07428v2)；DRL 轨迹规划 [Federated DRL based trajectory optimization, Nature Sci. Rep. 2024](https://www.nature.com/articles/s41598-024-72654-y) | 轨迹决定关联集 $\{U_j\}$ 随时间变化 → **要求聚合权重与划分解耦**（5.C 的预缩放设计正是为此） |
+| **带宽与通信** | AirComp 使上行开销不随设备数增长；BatchCrypt 批量编码使加密开销降 2–3 个数量级 [BatchCrypt, USENIX ATC 2020](https://www.usenix.org/conference/atc20/presentation/zhang-chengliang) | P11 的 PLHE 密文 36.4–133.2 MB/轮、P9 的 109 MB/方/轮在此约束下均不可行 |
+| **延迟敏感** | 实时视觉 FL 联合优化数据/计算/通信设计 [Energy-Efficient FL for Edge Real-Time Vision, IEEE JSAC 2026](https://ui.adsabs.harvard.edu/abs/2025IJSAC..43.4000H/abstract)；轮次延迟建模为 $\max(t_{\text{train}}+t_{\text{upload}})+t_{\text{agg}}$ [arXiv 2412.07428](https://arxiv.org/abs/2412.07428v2) | 多轮交互协议（P11 的算法 4 需云↔边两次往返 + 开方）在延迟敏感任务下不可接受 |
+
+### 4.3 安全层面的挑战
+
+| 挑战 | 证据 | 现有 11 篇的覆盖情况 |
+|---|---|---|
+| **UAV 物理暴露、易被俘获（node capture）** | Liao 等指出 UAV 作边缘节点易被物理俘获，提出 TEE + 余弦相似度鲁棒聚合 [UAV-Assisted FL with TEE, Electronics 2023](https://www.mdpi.com/2079-9292/12/18/3938) | **P8 边缘持 ECC 私钥 Shamir 份额 $y_i$；P11 边缘持 $sk_{A_i}$ → 俘获即泄露，且 P11 可回溯历史聚合** |
+| **前向安全缺失** | Su 等集成 HE + TEE + 聚合签名实现可验证安全 FL [Secure and Verifiable Edge-FL, Electronics 2026](https://www.mdpi.com/2079-9292/15/5/1029)；区块链用于防篡改审计 | **11 篇全缺**（§1.4）。P6 每 $\tau$ 轮换但需 KDC 在线且轮换的是同一把共享 $sk$，历史密文照样可解 |
+| **移动攻击者（mobile adversary）** | 主动式秘密共享（proactive secret sharing）是对抗"在不同时间窗俘获不同节点"的标准手段（Herzberg et al. 1995 经典结论，**判断**：属密码学通识，本轮未单独检索确证） | **11 篇全缺** |
+| **可验证缺口** | — | **仅 P10 DSVFL 有**，但依赖 TA 每轮在线；P8 的 hash 只防"解密个体"不验"聚合正确" |
+| **HE 与拜占庭检测的根本矛盾** | HE 隐藏梯度内容 → Krum / Median / TrimmedMean / 余弦相似度等基于统计的检测**无法在密文域执行**；FHEFL 尝试 FHE-friendly 的拜占庭容忍但未针对 UAV [FHEFL, IEEE 2026](https://ieeexplore.ieee.org/abstract/document/11692601/) | **仅 P11 PPBR 有**，靠"密文域盲化范数 + 边缘解密开方 + 中位数筛选"绕开，但代价是给边缘解密能力 + 多轮交互 + 边缘拜占庭时不可验证 |
+
+### 4.4 "UAV + HE + 层次 FL" 是明确空白
+
+联网调研的近期层次 UAV-FL 工作：
+
+| 论文 | 年份 | 架构 | 隐私 | 抗拜占庭 | 自述局限 |
+|---|---|---|---|---|---|
+| [Blockchain-based Trustworthy HFL for UAV-IoT](https://ieeexplore.ieee.org/abstract/document/10453360/) | 2024 | 端→UAV(edge)→云 | 区块链审计 | BFT 共识 | 区块链引入额外延迟 |
+| [Adaptive UAV-Assisted HFL for Dynamic Smart IoT](https://ieeexplore.ieee.org/abstract/document/11203884/) | 2025 | 端→UAV→云 | ⚠️未提及 HE/DP | 未涉及 | 能量受限下重部署频率受限 |
+| [Integrated Cloud-Edge-SAGIN HFL for Multi-UAV](https://ieeexplore.ieee.org/abstract/document/11367083/) | 2026 | 端→UAV→卫星→云 | ⚠️未确证 | 未涉及 | 卫星链路高延迟 |
+| [HFSL-CUNs: Hierarchical FSL for UAV Edge-Fog-Cloud](https://ieeexplore.ieee.org/abstract/document/11717566/) | 2026 | 端→Fog(UAV)→云 | 分割学习隐式保护 | 未涉及 | 模型分割点选择影响精度 |
+| [Secure Hierarchical FL for UAV Edge Computing](https://ieeexplore.ieee.org/abstract/document/11628559/) | 2026 | 端→UAV→云 | HE + 聚合签名 | 未明确 | HE 开销在 UAV 端显著 |
+| [AI-driven Blockchain for Secure FL in 6G-NTN UAV Networks](https://pubs.aip.org/aip/adv/article/15/9/095113/3361999) | 2025 | UAV 网络 + 分片区块链 | **CKKS 加密 $\Delta w_i$** | 区块链共识 | HE 仅在地面基站/云执行，**未在 UAV 端做同态运算** |
+
+**结论**：截至 2026 年中，**尚无一篇同时满足"UAV 作边缘聚合节点 + 在 UAV 端执行同态聚合 + 层次 FL 架构"三个条件**。[Privacy and Security Challenges in FL for UAV Systems: A Systematic Review, IEEE 2025](https://ieeexplore.ieee.org/abstract/document/11005535/) 亦明确指出"HE + UAV-assisted hierarchical FL"是尚未充分探索的方向，现有工作多将 HE 用于地面 FL 或仅在云端执行。
+
+### 4.5 值得研究的点 → 本报告 4 个方案的映射
+
+下表左列是调研得到的开放问题（含我基于 §1–§2 分析补充的），右列是本报告的回应。**加粗**者为本报告 4 个方案直接攻克的问题。
+
+| # | 开放问题 | 回应 |
+|---|---|---|
+| 1 | **UAV 移动导致客户端换边时，密文域聚合权重如何保持无偏且不解密？** | **→ 5.C**：全局样本数整数预缩放 + 边层不归一化 + 云层纯加法，证明 $\sum_j A_j\equiv\sum_{u}\frac{d_u}{D}\Delta_u$ 与划分 $\{U_j\}$ 无关 |
+| 2 | **UAV 端算力不足以跑 CKKS 时，如何分层分配 HE 运算？** | **→ 5.C / 5.D**：UAV 只做密文加法 + 明文域确定性算法；rescale / 除法归一化 / 乘法全部在云端；给出 Jetson Orin 级的耗时与能耗核算 |
+| 3 | **UAV 物理俘获下 HE 密钥管理如何前向安全？** | **→ 5.D**：哈希链轮密钥 $K_j^{r+1}=H(K_j^r)$（单向）+ 主动式份额刷新（防移动攻击者）；**→ 5.C**：UAV 零私钥，俘获即无所得 |
+| 4 | Non-IID + HE 聚合下的收敛性保证 | 部分回应：5.C 证明预缩放聚合**精确等于** FedAvg（零偏差），把 HE 近似误差与统计异构解耦；完整收敛界留作后续 |
+| 5 | **UAV 能量预算约束下的 HE 操作调度** | **→ 5.D**：块级异构稀疏，各客户端按自身 $E_i^r,R_i^r$ 独立决定加密哪些块，零协商；给出模数链长度 $L^r$ 的闭式选择 |
+| 6 | AirComp 与 HE 的兼容性（模拟叠加 vs 数字密文） | **未回应**（AirComp 的模拟叠加会破坏 RLWE 密文的代数结构，**判断**：需要全新的"模拟-数字混合聚合"理论，超出本报告范围） |
+| 7 | 异步/半同步下的密文新鲜度（过期梯度如何处理而不解密） | **→ 5.C 部分回应**：轮次绑定 MAC（5.D 的 $K_j^r$）使过期密文可被检测拒绝；完整的异步密文聚合留作后续 |
+| 8 | 多 UAV 协作时的跨 UAV 密文转换 / re-encryption proxy | **→ 5.C**：因为 UAV 零私钥且所有 UAV 用同一全局公钥，**密文可在 UAV 间直接接力转发，无需任何重加密代理** |
+| 9 | HE 参数与 UAV 信道条件的联合优化 | **→ 5.D**：建立"模数链 $L$ ↔ 密文体积 ↔ 传输时间 ↔ 悬停能耗 ↔ 噪声预算"的四维闭式权衡 |
+| 10 | **拜占庭鲁棒性与 HE 的结合（密文域无法做统计检测）** | **→ 5.B**：把鲁棒判定整体移出密文域——公开低维 CLDP 指纹 + 明文域确定性 MAD 排除 + 全员本地重算验证，零交互零深度且天然可验证 |
+| 11 | **（本报告补充）部分解密的原子性缺口** | **→ 5.A**：完整密文上传使服务器获得"可撤销聚合"能力，任何时刻可剔除掉线者，$c_0$ 与 $c_1$ 严格对应同一存活集 |
+| 12 | **（本报告补充）每轮 $O(N^2)$ 点对点份额分发在无线场景不可行** | **→ 5.A / 5.B**：setup 期一次性 Shamir 分片 + 训练期星形拓扑掩码，每轮通信降至 $O(N)$；**且地面 IoT 设备之间通常没有直连链路，P2P 方案在此类场景根本无法部署** |
+| 13 | **（本报告补充）可信机构每轮在线（P10 的 TA）** | **→ 5.B**：用"公开输入 + 确定性函数 + 全员本地重算 + 拒绝服务作为惩罚"取代集中式验证者，机构完全离线 |
+
+---
+
+## 5. 四个新方案
+
+### 5.0 总体设计原则与四方案关系
+
+四个方案不是彼此孤立的，而是**分层复用**的——这一点很重要，因为它反映了真实的工程路径：底层密码原语做一次，上层安全属性逐个叠加。
+
+```
+        ┌─────────────────────────────────────────────────────────┐
+        │  共享密码内核：子集可选的加性预共享多密钥 CKKS            │
+        │  （5.A 提出，5.B/5.C/5.D 直接复用）                       │
+        │  · 固定公钥 a, b_i；每轮公开随机数 v^r 由 PRPG 本地重现    │
+        │  · setup 期一次性把 s_i 加性拆分给所有客户端（只交换种子）  │
+        │  · 每轮每客户端只上传 1 个 R_q 元素 + 1 个部分解密元素     │
+        │  · 服务器可事后任选存活子集 S，聚合结果精确等于 Σ_{i∈S}m_i  │
+        └───────────────┬─────────────────────────┬───────────────┘
+                        │                         │
+        ┌───────────────▼──────────┐   ┌──────────▼────────────────┐
+        │ 5.B VRSA-FL（标准 FL）    │   │ 5.C MUFA-HFL（端-UAV-云）  │
+        │ 在内核上叠加：             │   │ 在内核上叠加：              │
+        │ · 公开 CLDP 指纹          │   │ · 全局整数预缩放            │
+        │ · 确定性 MAD 排除         │   │ · 两级纯加法（零归一化）    │
+        │ · 加性哈希标签可验证聚合   │   │ · UAV 零私钥                │
+        │ · 无需 TA/TEE 在线        │   │ · 客户端侧残差预测          │
+        └──────────────────────────┘   └──────────┬────────────────┘
+                                                  │
+                                       ┌──────────▼────────────────┐
+                                       │ 5.D EFS-HFL（多 UAV 编队） │
+                                       │ 在 5.C 上叠加：             │
+                                       │ · 哈希链轮密钥（前向安全）   │
+                                       │ · 零通信主动式份额刷新       │
+                                       │   （抗移动攻击者）           │
+                                       │ · 块级索引对齐异构稀疏       │
+                                       │ · 能量-模数链闭式联合优化    │
+                                       └───────────────────────────┘
+```
+
+**共同记号**（承接 §3）：环 $R_q=\mathbb Z_q[X]/(X^n+1)$；客户端集合 $\mathcal N=\{1,\dots,N\}$；轮次 $r$；客户端 $i$ 的本地更新（增量）$\Delta_i^r$；样本数 $d_i$，$D=\sum_i d_i$，FedAvg 权重 $\alpha_i=d_i/D$；缩放因子 $\Delta$（CKKS）与全局定点标度 $Q$（整数权重用，见 5.C）；$m_i^r \triangleq \texttt{Encode}(\text{定点化}(\alpha_i\Delta_i^r))$。
+
+---
+
+## 5.A SAS-FL：子集可选加性预共享的多密钥联邦学习
+
+**SAS-FL = Subset-Aggregatable additive-Sharing FL**
+**定位**：标准 FL（端-云）／多密钥 CKKS／阈值可退化／无可信机构（训练期）／服务器恶意模型下可验证参与集
+
+### 5.A.1 场景
+
+跨机构（cross-silo）联邦学习：$N$ 个参与方（医院、银行分行、区域电网调度中心），各自持有本地数据集 $\mathcal D_i$，通过一个**公共云**协同训练。云的运营方与任何单个参与方都无信任关系。此外，本方案的设计目标显式覆盖**地面 IoT 设备直连云**的退化场景（此时 §4.1 的 0.28–0.32 W 发射功率与 10 MHz 带宽约束适用）。
+
+具体约束（这些约束决定了设计取舍）：
+
+- $N$ 在 $8\sim64$ 量级（跨机构联盟的典型规模），每轮**掉线率 15–18%**（§4.2 实测数据）
+- 参与方之间**没有直接通信链路**，或链路极贵——所有交互必须经由云中转（星形拓扑）
+- **不假设** TEE、KDC、TA 或任何常驻可信机构在训练期在线
+- 云**不可信**：它可以丢弃某些参与方的密文、可以谎报存活集、可以篡改聚合结果
+- 参与方半诚实，可与云共谋，共谋数上限 $\kappa\le N-2$
+
+### 5.A.2 要解决的问题
+
+对照 §2.1 的主链，SAS-FL 要同时修掉四个已知缺陷：
+
+| 缺陷 | 出处（原文核实） | SAS-FL 的处置 |
+|---|---|---|
+| **① 部分解密份额泄露个体**：服务器同时持有 $c_{i,0},c_{i,1}$ 与 $\mu_i=c_{i,1}s_i$，故 $c_{i,0}+\mu_i\approx m_i$ | P2 CDKS | 采用 CDKS 的**独立公钥**加密但只上传 $c_{i,0}$；部分解密改为"每个客户端只贡献一个被 noise flooding 掩蔽的聚合量 $D_j^{(S)}$"，服务器无法把 $D_j$ 与任何单个 $c_{i,0}$ 配对 |
+| **② 聚合公钥把参与者全集硬编码 → 一人掉线即解密失败** | xMK-CKKS（P9 §3.2.2 原文明确指出） | **子集可选**：因为份额是按 $(i,j)$ 索引的，任何存活子集 $S$ 都能被**事后**精确聚合，$c_0^{(S)}$ 与 $s^{(S)}$ 严格对应同一个 $S$ |
+| **③ 上传/再共享之间的原子性缺口 → $v_jb_j$ 污染且不可检测**（本报告 §2.1 指出，P9 原文未讨论） | P9 CDKS-LSS | 两阶段存活探测 + 子集重选：任何在第二阶段失联的参与方被直接从 $S$ 中剔除，其 $c_{j,0}$ **同步**从 $c_0^{(S)}$ 中排除，污染项在代数上不可能出现 |
+| **④ 每轮 $O(N^2)$ 点对点份额分发**（P9 实测：$N=20$ 时每方 98.895 MB P2P，总发送 109.305 MB） | P9 CDKS-LSS | **setup 期一次性交换 32 字节种子**（不是环元素！），训练期每客户端每轮只**单播上传 2 个 $R_q$ 元素**、**下载 $N$ 比特**的存活集。P2P 流量降为 **0** |
+| **⑤ 份额正确性不可验证** | P9（future work：strengthening to malicious model） | 服务器必须广播 $ct^{(S)}$ 与加性标签 $T^{(S)}$，任何客户端可本地重算并拒绝（详见 5.B，SAS-FL 提供参与集可验证性的基础） |
+
+**核心洞察**：P9 每轮重共享 $\mu_i=c_{i,1}s_i$ 是**不必要的**。因为 $\mu_i$ 对 $s_i$ 是**线性**的，只要在 setup 期把 $s_i$ 本身加性拆分一次，任何轮的 $\mu_i$ 都能由份额持有者本地算出。**把成本从"每轮 $O(N)$ 个环元素的通信"转移到"一次性 $O(N)$ 个 32 字节的通信 + 每轮 $O(N)$ 次本地多项式乘法"**，这是本方案效率优势的来源。
+
+### 5.A.3 创新点与设计目标
+
+**创新点 1 —— 公开信标随机数使 $c_{i,1}$ 无需上传**
+
+所有客户端在第 $r$ 轮用**同一个**由伪随机多项式生成器（PRPG）本地重现的公开随机数 $v^r$（机制取自 P5 ESAFL 的 Eq.6，但用于多密钥 CKKS 而非单密钥聚合体）：
+
+$$v^r = \texttt{Vec2Poly}\Big(\text{PRG}\big((x_1\oplus b_1)\|\cdots\|(x_k\oplus b_k)\big)\Big),\quad (x_1\|\cdots\|x_k)_2 = r,\ \ (b_1\|\cdots\|b_k)_2 = B$$
+
+其中 $B$ 是 setup 期分发的公共种子。**于是 $c_{i,1}^r = v^r\cdot a$ 对所有 $i$ 完全相同且公开**，客户端只需上传 $c_{i,0}^r$ 一个分量。这一招同时带来三个好处：上行减半；服务器不需要转发 $\{c_{i,1}\}$ 列表（下行降为 $N$ 比特）；$v^r$ 每轮新鲜，保证跨轮不泄露（$c_{i,0}^{r}-c_{i,0}^{r'}$ 不含可分离的 $m_i$ 信息）。
+
+**创新点 2 —— 按 $(i,j)$ 索引的加性预共享 ⇒ 子集可选聚合**
+
+setup 期客户端 $i$ 把 $s_i$ 加性拆成 $N$ 份：对 $j\ne i$ 取 $s_{i,j}\leftarrow U(R_q)$，令 $s_{i,i}=s_i-\sum_{j\ne i}s_{i,j}$。客户端 $j$ 持有第 $j$ 列 $\{s_{i,j}\}_{i=1}^N$。**关键性质**：对任意 $S\subseteq\mathcal N$，客户端 $j$ 可本地算出
+$$\bar s_j^{(S)} \triangleq \sum_{i\in S}s_{i,j},\qquad \text{且}\quad \sum_{j=1}^N \bar s_j^{(S)} = \sum_{i\in S}s_i \triangleq s^{(S)}$$
+所以**部分解密的"列和"天然支持任意子集**，而服务器只需广播一个 $N$ 比特的指示向量来指定 $S$。
+
+**创新点 3 —— setup 期只交换种子，不交换环元素**
+
+$s_{i,j}$ 是完整的 $R_q$ 元素（$n=2^{14},\log q=318$ 时约 0.62 MB/个），$N=20$ 时一次性交换 $N(N-1)=380$ 个即 236 MB——不可接受。改用 SecAgg（P1）的种子技巧：客户端 $i,j$ 通过一次性 DH 协商出成对种子 $\sigma_{ij}$（32 字节，经服务器以密文中转），令
+$$s_{i,j}=\text{PRG}(\sigma_{ij})\ \ (j>i),\qquad s_{j,i}=-\text{PRG}(\sigma_{ij})\ \ (\text{同一 } \sigma_{ij}\text{，符号相反}),\qquad s_{i,i}=s_i$$
+则 $\sum_j s_{i,j}=s_i$ 自动成立，且**setup 期通信仅 $N(N-1)/2\times32\,\text{B}\approx6\,\text{KB}$（$N=20$）**。这是把 P1 SecAgg 的成对掩码思想从"每轮掩码"降维使用到"一次性密钥共享"，二者结构同源但用途不同。
+
+**创新点 4 —— SecAgg 风格掩码层，把第二阶段掉线也变成阈值容错**
+
+基础的加性预共享要求第二阶段（部分解密）**全员在线**，因为缺一个 $D_j$ 就少一项 $v^ra\bar s_j^{(S)}$（幅度 $\sim q$）。为此叠加 P1 的掩码层：
+$$D_j^{(S)} = v^ra\cdot\bar s_j^{(S)} + \underbrace{\text{PRG}(b_j)}_{\text{自掩码，Shamir}(t,N)\text{分片}} + \underbrace{\sum_{k>j}\text{PRG}(\sigma_{jk})-\sum_{k<j}\text{PRG}(\sigma_{jk})}_{\text{成对零和掩码}} + e_j^*$$
+成对掩码在 $\sum_j$ 时精确抵消；自掩码 $\text{PRG}(b_j)$ 在 $j$ 掉线时由 $\ge t$ 个幸存者用 Shamir 份额重构后从总和中减去。**于是第二阶段只需 $t$ 个客户端在线**，与 P1 SecAgg 的抗掉线机制完全同构，但作用在密文部分解密上而非明文求和上。
+
+**创新点 5 —— noise flooding 的恢复**
+
+P9 的 Algorithm 1/2 第 3、8 行写的是 $\mu_i\leftarrow c_{i,1}\cdot s_i$，**未加 noise flooding**（而 CDKS/xMK-CKKS 原版有 $e_i^*\leftarrow\phi$）。P9 可以省掉是因为 LSS 层本身是信息论隐藏的；**SAS-FL 把全部 $N$ 个 $D_j$ 直接交给服务器，因此必须恢复 flooding**：$e_j^*\leftarrow\phi^n$，$\text{Var}(\phi)=2^{2\lambda}\cdot\text{Var}(\text{泄露项})$。这是一个诚实的权衡：SAS-FL 用"flooding 占用噪声预算"换"通信降 $O(N)$ 倍"。
+
+**设计目标汇总**：
+
+| 目标 | 指标 |
+|---|---|
+| 上行通信 | 每客户端每轮 **2 个 $R_q$ 元素**（vs P9 的 $N+1$ 个） |
+| 下行通信 | 每轮 **$N$ 比特 + 1 个 $R_q$ 元素**（广播/多播） |
+| P2P 通信 | **0**（vs P9 的 $N(N-1)$ 个环元素） |
+| setup 通信 | 每客户端 $O(N)\times32$ B（一次性） |
+| 掉线容忍 | 第一阶段任意比例；第二阶段 $\ge t$（掩码层） |
+| 共谋上限 | 服务器 $+\kappa\le N-2$ 个客户端 |
+| 可信机构 | 训练期**无**；setup 期一次性 ceremony（可由任一参与方发起，无需常驻机构） |
+| 乘法深度 | **0**（纯密文加法 + 客户端本地明文预缩放） |
+
+### 5.A.4 威胁模型
+
+| 实体 | 信任假设 | 能力 | 不能做到 |
+|---|---|---|---|
+| **云服务器 $S$** | **恶意（active / malicious）** | 丢弃任意客户端的密文；谎报存活集 $S$（对不同客户端报不同集合）；篡改聚合密文 $ct^{(S)}$；重放旧轮密文；与任意 $\le N-2$ 个客户端共谋；提前终止 | 恢复任何单个诚实客户端的 $m_i^r$；恢复任何 $s_i$；在 5.B 的验证层下**不可察觉地**篡改聚合结果 |
+| **客户端 $C_i$** | 半诚实，可共谋，共谋数 $\kappa\le N-2$ | 观察公共信道全部内容（含所有 $c_{i,0}^r$、$S$、所有 $D_j^{(S)}$、聚合结果）；互相交换所持有的份额 $\{s_{i,j}\}_{j\in C}$；与服务器共谋 | 分离出诚实方 $h$ 的 $s_{h,h}$（在 $\{s_{h,j}\}_{j\notin C}$ 均匀随机条件下信息论隐藏）；恢复 $m_h^r$ |
+| **掉线客户端** | 任意比例、任意时刻 | 第一阶段（上传）掉线：直接从 $S$ 剔除，无副作用；第二阶段（部分解密）掉线：由掩码层用 $\ge t$ 份重构 | — |
+| **setup ceremony** | 一次性，可由参与方联合执行 | 若 ceremony 期间的 DH 公钥被中间人替换，则成对种子泄露 | 用签名 + PKI 防止（同 P1 SecAgg 的 Round 0 AdvertiseKeys） |
+| **信道** | 公共信道，不假设保密 | 全部消息可被窃听 | 客户端↔服务器需认证（防伪造上传），用签名 |
+| **不假设** | — | **无 TEE、无 KDC、无 TA、无常驻可信机构、无客户端间直连链路** | — |
+
+**安全归约基础**：RLWE（区分 $(a,b_i)$ 与均匀）+ PRG 安全性 + DDH（成对种子协商）+ Shamir 秘密共享的信息论安全性 + 签名方案的 EUF-CMA。
+
+**安全目标（形式化陈述）**：
+
+- **G1（个体隐私）**：对任意诚实客户端 $h$ 与任意敌手视图 $\text{View}=(pp,\{c_{i,0}^r\},S,\{D_j^{(S)}\}_j,M^{(S)},\{s_{i,j}\}_{j\in C})$，有 $\Pr[\mathcal A(\text{View})=m_h^r]\le \text{negl}(\lambda)$
+- **G2（聚合正确性可验证）**：恶意服务器若输出 $M'\ne \sum_{i\in S}m_i^r$（其中 $S$ 为按公开规则确定的存活集），则被任一诚实客户端检测的概率 $\ge 1-2^{-128}$
+- **G3（参与集不可伪造）**：服务器谎报存活集（对不同客户端报不同 $S$，或对不在场的客户端计入 $S$）会被检测
+- **G4（前向性，可选）**：见 5.D
+
+### 5.A.5 方案设计
+
+#### 实体
+
+| 实体 | 数量 | 长期持有 | 每轮输入/输出 |
+|---|---|---|---|
+| 客户端 $C_i$ | $N$ | 私钥 $s_i\leftarrow\chi^n$；列份额 $\{s_{i,j}\}_{j=1}^N$（以种子 $\{\sigma_{ij}\}$ 形式压缩存储）；自掩码种子 $b_i$ 的 Shamir 份额；公共种子 $B$；签名密钥 $(sk_i^{sig},pk_i^{sig})$ | 输入：$w^{r-1}$、$\mathcal D_i$；输出：$\Delta_i^r$、$ct_{i,0}^r$、$D_i^{(S)}$、解出的全局模型 $w^r$ |
+| 云服务器 $S$ | 1 | 所有 $pk_i=(b_i,a)$、所有 $pk_i^{sig}$、公共 $a$、$B$ | 收集 $\{c_{i,0}^r\}$、广播 $S$、计算 $c_0^{(S)}$、收集 $\{D_j^{(S)}\}$、广播 $M^{(S)}$ 与验证标签 |
+
+#### 阶段 0：Setup（一次性，无在线可信机构）
+
+**S0-1 参数与 CRS**：任一客户端发起，全体确认公开参数
+$$pp=(n,q,\chi,\psi,\phi,\Delta,a,B),\qquad a\leftarrow U(R_q)$$
+（$a,B$ 构成 CRS；可由全体客户端用 commit-reveal 联合生成以消除单方操纵风险，同 P2 CDKS 的 CRS 模型但去掉了对 setup 方的信任）
+
+**S0-2 密钥生成**：每个 $C_i$ 本地采样 $s_i\leftarrow\chi^n$，$e_i\leftarrow\psi^n$，计算并广播
+$$pk_i=(b_i,a),\qquad b_i=-a\cdot s_i+e_i\in R_q$$
+
+**S0-3 成对种子协商（服务器仅作密文中转，SecAgg Round 0/1 模式）**：
+- 每个 $C_i$ 生成 DH 密钥对 $(x_i, g^{x_i})$ 与签名，上传服务器
+- 服务器广播经签名的公钥列表 $\{(j,g^{x_j},\sigma_j)\}_{j\in\mathcal N}$；各客户端验签
+- $C_i$ 与 $C_j$（$i<j$）各自计算 $\sigma_{ij}=H\big((g^{x_j})^{x_i}\big)=H\big((g^{x_i})^{x_j}\big)$
+- 定义加性份额：
+$$s_{i,j}=\begin{cases}\text{PRG}(\sigma_{ij}) & i<j\\[2pt] s_i-\sum_{k>i}\text{PRG}(\sigma_{ik})+\sum_{k<i}\text{PRG}(\sigma_{ki}) & i=j\\[2pt] -\text{PRG}(\sigma_{ji}) & i>j\end{cases}\qquad\Longrightarrow\qquad \sum_{j=1}^N s_{i,j}=s_i$$
+- **通信量**：每客户端上传 1 个 DH 公钥 + 签名，下载 $N$ 个公钥。总计 $O(N)$ 消息、$O(N)$ 字节级载荷。**不传任何环元素。**
+
+**S0-4 自掩码种子的 Shamir 分片（抗第二阶段掉线）**：
+- 每个 $C_i$ 采样 $b_i\leftarrow\{0,1\}^\lambda$，用 $(t,N)$ Shamir 拆成 $\{(k,b_{i\to k})\}_{k=1}^N$，用成对密钥 $\sigma_{ik}$ 加密后上传服务器中转给各 $C_k$
+- 通信量：每客户端 $N$ 个 $\lambda$ 比特份额 = $O(N\lambda)$ 比特（$N=20,\lambda=256$ 时约 640 B）
+
+**S0-5 阈值与公开评估**：确定 $t$（建议 $t=\lfloor 2N/3\rfloor+1$，同 P1 SecAgg 在"服务器 + $n_C$ 客户端共谋"下的推荐值）。
+
+> **Setup 总通信**：每客户端约 $O(N\lambda)$ 比特 ≈ 1 KB 量级。对比 P9 CDKS-LSS 每轮 109 MB —— **一次性成本比 P9 的单轮成本低 5 个数量级**。
+>
+> **Setup 总计算**：每客户端 $N-1$ 次 PRG 展开（得到 $\{s_{i,j}\}$ 的隐式表示，实际使用时按需展开）。
+
+#### 阶段 1：第 $r$ 轮协议（6 步闭环）
+
+**步骤 1 —— 客户端本地训练与预缩放**
+
+$C_i$ 用 $w^{r-1}$ 在 $\mathcal D_i$ 上做 $\tau$ 步本地 SGD，得增量
+$$\Delta_i^r = w_i^{r,\text{local}}-w^{r-1}$$
+本地明文预缩放（**零乘法深度的关键**，见 §3.5）：
+$$\tilde\Delta_i^r \triangleq \alpha_i\cdot\Delta_i^r,\qquad \alpha_i=d_i/D$$
+定点化并 CKKS 编码：
+$$m_i^r \triangleq \texttt{Encode}\big(\lfloor Q\cdot\tilde\Delta_i^r\rceil\big)\in R$$
+其中 $Q$ 为全局定点标度（保证整数权重 $\alpha_i$ 的分子分母不丢精度，见 5.C 的无偏性证明）。
+
+**步骤 2 —— 加密并上传（只传一个分量）**
+
+$C_i$ 从 PRPG 本地重现 $v^r$（无需通信），采样 $e_{i,0}^r\leftarrow\psi^n$，计算
+$$\boxed{\;c_{i,0}^r = v^r\cdot b_i + m_i^r + e_{i,0}^r \pmod q\;}\qquad(\text{注意 }c_{i,1}^r=v^r a\text{ 是公开的，不上传})$$
+上传 $(i,\ r,\ c_{i,0}^r,\ \text{Sig}_{sk_i^{sig}}(i\|r\|c_{i,0}^r))$ 到服务器。
+
+**步骤 3 —— 服务器确定并广播存活集 $S$**
+
+服务器收集到密文的客户端集合记为 $A_1$（超时阈值 $\delta_{to}$）。服务器广播
+$$S_1 \triangleq A_1,\qquad \text{附带每个 }i\in S_1\text{ 的签名验证结果}$$
+**注意**：$S_1$ 只有 $|S_1|\le N$ 比特信息量。所有客户端** independently 验证**自己是否在 $S_1$ 中，并（在 5.B 的机制下）验证 $S_1$ 是否与实际上传记录一致。
+
+**步骤 4 —— 客户端计算部分解密贡献（核心创新）**
+
+每个在线客户端 $C_j$（$j$ 不必属于 $S_1$！掉线上传的客户端仍可参与解密阶段）计算
+$$\bar s_j^{(S_1)} = \sum_{i\in S_1}s_{i,j}\qquad(\text{本地 PRG 展开} + |S_1|\text{ 次环加法})$$
+$$\boxed{\;D_j^{(S_1)} = v^r a\cdot \bar s_j^{(S_1)} + \text{PRG}(b_j) + \sum_{k>j}\text{PRG}(\sigma_{jk})-\sum_{k<j}\text{PRG}(\sigma_{jk}) + e_j^*\pmod q\;}$$
+其中 $e_j^*\leftarrow\phi^n$，$\text{Var}(\phi)\ge 2^{2\lambda}\cdot\text{Var}\big(v^ra\bar s_j^{(S_1)}\big)$。上传 $(j, D_j^{(S_1)}, \text{Sig}_j)$。
+
+**计算量**：$|S_1|$ 次 PRG 展开 + $|S_1|$ 次环加法 + 1 次环乘法（$v^ra$ 可预计算并广播/本地重现）+ $N-1$ 次 PRG 展开（掩码）。**总计 $O(N)$ 次多项式运算，无多项式乘法（$v^ra$ 全局共享，可预计算一次）** —— 这比 P9 每轮的 $N-1$ 次 $R_q$ 元素传输轻得多。
+
+**步骤 5 —— 服务器聚合（纯加法，零深度）**
+
+服务器计算
+$$c_0^{(S_1)} = \sum_{i\in S_1}c_{i,0}^r \pmod q$$
+收集 $\{D_j^{(S_1)}\}_{j\in A_2}$，其中 $A_2$ 为第二阶段在线集。
+
+**若 $|A_2|\ge N$**：直接
+$$M^{(S_1)} = c_0^{(S_1)} + \sum_{j=1}^N D_j^{(S_1)}\pmod q$$
+
+**若 $|A_2|< N$ 但 $\ge t$**（掩码层生效）：服务器公布掉线集 $A_2^{(d)}=\mathcal N\setminus A_2$，向幸存者索取 Shamir 份额重构 $\{\text{PRG}(b_v)\}_{v\in A_2^{(d)}}$ 与 $\{s^{SK}_v\}_{v\in A_2^{(d)}}$（后者用于重算成对掩码），然后
+$$M^{(S_1)} = c_0^{(S_1)} + \sum_{j\in A_2}D_j^{(S_1)} - \sum_{v\in A_2^{(d)}}\text{PRG}(b_v) + \sum_{j\in A_2}\Big(\sum_{v\in A_2^{(d)},v>j}\text{PRG}(\sigma_{vj})-\sum_{v\in A_2^{(d)},v<j}\text{PRG}(\sigma_{vj})\Big)$$
+（结构与 P1 SecAgg 的 Unmasking 等式完全同构）
+
+**若 $|A_2|<t$**：本轮中止，服务器**重广播** $S_2\subsetneq S_1$（剔除第二阶段失联者），回到步骤 4。**因为 $c_0^{(S)}$ 与 $\bar s_j^{(S)}$ 严格对应同一个 $S$，重选不产生任何污染项** —— 这是 SAS-FL 修掉 P9 原子性缺口的机制所在。
+
+**步骤 6 —— 客户端解码与模型更新**
+
+每个客户端计算（或从服务器接收 $M^{(S_1)}$ 后本地计算）
+$$\hat w^r = w^{r-1} + \frac1Q\cdot\texttt{Decode}\big(M^{(S_1)}\big)$$
+
+#### 闭环公式推导（完整链条）
+
+**定理 5.A.1（子集精确性）**：设 $S\subseteq\mathcal N$ 为任意非空子集，所有 $j\in\mathcal N$ 均在线完成步骤 4，则
+$$M^{(S)} \equiv c_0^{(S)}+\sum_{j=1}^N D_j^{(S)} = \sum_{i\in S}m_i^r + v^r\!\!\sum_{i\in S}\!\!e_i + \sum_{i\in S}\!\!e_{i,0}^r + \sum_{j=1}^N\!\!e_j^* \pmod q$$
+其中后三项为噪声。特别地，当 $\big\|\sum_{i\in S}m_i^r\big\|_\infty+\|\text{噪声}\|_\infty<q/2$ 时，
+$$\texttt{Decode}\big(M^{(S)}\big)\cdot Q^{-1} = \sum_{i\in S}\alpha_i\Delta_i^r + \varepsilon,\qquad \|\varepsilon\|\le \frac{\|\text{噪声}\|_\infty}{\Delta Q}$$
+
+**证明**：
+$$\begin{aligned}
+M^{(S)} &= \sum_{i\in S}c_{i,0}^r + \sum_{j=1}^N\Big(v^ra\sum_{i\in S}s_{i,j} + e_j^*\Big) &&\text{（成对/自掩码在 }\textstyle\sum_j\text{ 中精确抵消）}\\
+&= \sum_{i\in S}\big(v^rb_i+m_i^r+e_{i,0}^r\big) + v^ra\sum_{i\in S}\underbrace{\sum_{j=1}^N s_{i,j}}_{=\,s_i} + \sum_{j=1}^N e_j^*\\
+&= \sum_{i\in S}m_i^r + v^r\Big(\sum_{i\in S}b_i + a\sum_{i\in S}s_i\Big) + \sum_{i\in S}e_{i,0}^r+\sum_{j=1}^N e_j^*\\
+&= \sum_{i\in S}m_i^r + v^r\Big(\sum_{i\in S}(-as_i+e_i) + a\sum_{i\in S}s_i\Big) + \cdots &&(b_i=-as_i+e_i)\\
+&= \sum_{i\in S}m_i^r + v^r\sum_{i\in S}e_i + \sum_{i\in S}e_{i,0}^r+\sum_{j=1}^N e_j^* \qquad\blacksquare
+\end{aligned}$$
+
+> **这个推导的关键点**：$-as_i$ 与 $+as_i$ **在同一个子集 $S$ 上精确抵消**。P9 CDKS-LSS 的缺口正来自这里——它的 $c_0=\sum_{i=1}^N c_{i,0}$ 对**全体**求和，而 $F(0)=\sum_{j=1}^N\mu_j$ 只对**实际参与了再共享的人**求和，两个集合不一致时 $v_hb_h$ 项无法抵消。SAS-FL 通过"服务器广播 $S$ → 客户端按 $S$ 计算 $\bar s_j^{(S)}$ → 服务器按同一个 $S$ 计算 $c_0^{(S)}$"强制两个集合同一。
+
+**推论 5.A.2（掉线免疫）**：若客户端 $h$ 在步骤 2 之后、步骤 4 之前失联，服务器令 $S'=S\setminus\{h\}$ 并重广播，则
+$$M^{(S')} = \sum_{i\in S'}m_i^r + \text{噪声}$$
+**不含任何 $h$ 相关的残留项**。对比 P9 在此情形下得到 $\sum_i m_i^r + v_hb_h + e_{h,0}$（$v_hb_h$ 幅度 $\sim q$，且 CKKS 近似解密不报错）。
+
+**定理 5.A.3（隐私，G1）**：设敌手 $\mathcal A$ 控制服务器与客户端集合 $C$，$|C|=\kappa\le N-2$，诚实方 $h\notin C$。则 $\mathcal A$ 对 $m_h^r$ 的优势 $\le\text{negl}(\lambda)+2^{-\Omega(\lambda)}$。
+
+**证明思路**：
+1. $\mathcal A$ 知 $\{s_{h,j}\}_{j\in C}$，但 $s_{h,h}=s_h-\sum_{k>h}\text{PRG}(\sigma_{hk})+\sum_{k<h}\text{PRG}(\sigma_{kh})$ 中的 $\{\sigma_{hk}\}_{k\notin C}$ 由 DDH 保证对 $\mathcal A$ 不可区分于均匀，故 $s_{h,h}$ 在给定 $\{s_{h,j}\}_{j\in C}$ 下**计算上均匀** ⇒ $s_h$ 隐藏
+2. 恢复 $m_h^r$ 需 $c_{h,0}^r+v^ra\cdot s_h$；$\mathcal A$ 有 $c_{h,0}^r,v^r,a$ 但无 $s_h$ ⇒ 由 RLWE 困难性不可行
+3. $D_h^{(S)}$ 被 $e_h^*\leftarrow\phi$（$\text{Var}\ge2^{2\lambda}\cdot$泄露项方差）统计掩蔽 ⇒ 即使 $\mathcal A$ 看到 $D_h^{(S)}$ 也无信息（这一步是 SAS-FL 相对 P9 必须补的，见创新点 5）
+4. 聚合结果 $M^{(S)}$ 本身是协议的目标输出，不属于泄露 $\blacksquare$
+
+**共谋界说明**：当 $\kappa=N-1$ 时，$\mathcal A$ 知 $\{s_{h,j}\}_{j\ne h}$，可算出 $s_{h,h}=s_h-\sum_{j\ne h}s_{h,j}$？不能——它不知 $s_{h,h}$ 本身。但它能算 $\sum_{j\ne h}s_{h,j}$，而 $s_h=s_{h,h}+\sum_{j\ne h}s_{h,j}$，仍缺 $s_{h,h}$。**所以 SAS-FL 实际上抗 $\kappa\le N-1$ 共谋**（唯一未覆盖的是全员共谋，此时聚合结果本就公开）。这比 P9 的 Theorem 7（服务器 $+<t$ 个参与方）在共谋维度上**更强**，代价是 P9 的 LSS 层是信息论安全而 SAS-FL 依赖 DDH+flooding 的计算/统计安全。
+
+#### 开销核算
+
+**通信（$N=20$，$n=2^{14}$，$\log_2q=318$，单个 $R_q$ 元素 $=16384\times318/8\approx0.62$ MB）**
+
+| 项目 | P9 CDKS-LSS（原文实测） | SAS-FL | 改善 |
+|---|---|---|---|
+| 客户端→服务器（上行，单播） | $c_{i,0}$ 10.410 MB + $(N-1)$ 份份额 98.895 MB = **109.305 MB** | $c_{i,0}^r$ 0.62 MB + $D_j^{(S)}$ 0.62 MB = **1.24 MB** | **88×** |
+| 客户端↔客户端（P2P） | 98.895 MB（收发各一次） | **0** | **消除** |
+| 服务器→客户端（下行，广播） | 0.437 MB | $N$ 比特（存活集）+ 0.62 MB（聚合结果）≈ **0.62 MB** | 持平 |
+| setup（一次性） | Exceptional Sequence 协商 | ~1 KB（种子） | — |
+
+> 注：P9 的 10.410 MB / 5.205 MB 是 MNIST 规模下**多个环元素打包**的实测值（5.205 MB ÷ 0.62 MB ≈ 8.4，即约 8 个环元素/份额）。SAS-FL 的 1.24 MB 按**单环元素**计；若同样需 8 个环元素承载模型，则为 $8\times1.24=9.92$ MB，仍是 P9 的 **11×** 改善，且 P2P 归零。**改善倍数按元素个数计为 $(N+1)/2 = 10.5\times$（上行）**，这一比值与打包方式无关，是本方案可迁移的结论。
+
+**在 UAV 链路上的实际含义**：§4.1 给出典型带宽 $B=10$ MHz、上行速率数 Mbps 量级。P9 的 109 MB/方/轮在此链路上是**数分钟**（且需要客户端之间直连，地面 IoT 通常不具备）；SAS-FL 的 1.24 MB 是**秒级**，且全部走星形拓扑。
+
+**计算**
+
+| 实体 | 每轮计算 |
+|---|---|
+| 客户端 | 1 次环乘（$v^rb_i$，可预计算 $v^ra$）+ 1 次 CKKS Encode + $O(N)$ 次 PRG 展开与环加法 + 1 次 flooding 采样 |
+| 服务器 | $|S|$ 次环加法（$c_0^{(S)}$）+ $N$ 次环加法（$\sum D_j$）= $O(N)$ 次环加法，**零多项式乘法** |
+| 对比 | P8 SKHE 报告单密钥加法聚合比 xMK-CKKS 快 99.9%；SAS-FL 的服务器侧同为纯加法，量级相当 |
+
+#### 与已有方案的差异（逐条对照）
+
+| 维度 | P2 CDKS | xMK-CKKS | P5 ESAFL | P9 CDKS-LSS | **SAS-FL** |
+|---|---|---|---|---|---|
+| 密文分量数 | $k+1$ | 2 | **1** | $k+1$ | **1**（$c_{i,1}$ 公开不上传） |
+| 部分解密交互 | 全员，直传 | 全员，直传 | **无** | 全员再共享 + $t$ 份重构 | 全员各传 **1** 个聚合量 |
+| 一人掉线 | 失败 | **失败** | **失败且不可检测** | 成功（若全程未参与） | **成功（任意阶段）** |
+| 上传后/解密前掉线 | — | — | 污染不可检测 | **污染不可检测** | **无污染（子集重选）** |
+| 每轮 P2P 通信 | 0 | 0 | 0 | $O(N^2)$ | **0** |
+| 每轮上行（环元素数） | 2 | 2 | 1 | $N+1$ | **2** |
+| 抗共谋 | ⚠️CRS | $\kappa<N-1$ | $\kappa<N-1$ | 服务器 $+<t$ | **$\kappa\le N-1$** |
+| 可信机构 | 无 | 无 | AS（初始化） | 无 | **无** |
+| 服务器模型 | 半诚实 | 半诚实 | 半诚实 | 半诚实 | **恶意**（配 5.B 验证层） |
+| noise flooding | ✅ | ✅ | ❌ | **❌（原文算法缺失）** | ✅ |
+
+#### 局限（诚实声明）
+
+1. **noise flooding 占用噪声预算**：$\text{Var}(\phi)\ge2^{2\lambda}\cdot(\cdot)$ 使 $\sum_je_j^*$ 成为主导噪声项，需 $q$ 足够大。由 §3.6 的预算式，$N\sigma^*\ll q/2$ 要求 $\log q\gtrsim 2\lambda+\log N+\log\sigma$。这是 SAS-FL 用通信换的代价，需在参数选择时显式核算。
+2. **成员变更需重协商**：新客户端加入需与所有现有客户端建立成对种子（$O(N)$ 一次性）；客户端永久退出需重新分片以维持 $\sum_js_{i,j}=s_i$。**本报告给出的是重分片协议骨架**（见 5.D 的主动式刷新），完整的动态成员管理是后续工作。
+3. **依赖 setup ceremony 的 PKI**：成对种子的安全性依赖 DH 公钥的认证，需签名/PKI（同 P1 SecAgg Round 0）。
+4. **不抗拜占庭投毒**：SAS-FL 只保证隐私与聚合正确性，恶意客户端仍可提交有毒的 $m_i^r$。→ 由 5.B 处理。
+5. **第二阶段阈值 $t$ 与掩码层的权衡**：$t$ 越大越抗共谋但掉线容忍越低，与 P1/P9/P10 面临同样的参数张力。
+
+---
+
+## 5.B VRSA-FL：可验证的拜占庭鲁棒安全聚合联邦学习
+
+**VRSA-FL = Verifiable Robust Secure Aggregation FL**
+**定位**：标准 FL／单密钥形态（5.A 内核）／密文域鲁棒聚合／**无需任何在线可信机构**的可验证性／服务器与客户端同时恶意
+
+### 5.B.1 场景
+
+**UAV-Assist 的边缘计算 FL**（P10 DSVFL 的目标场景），但去掉"每轮必须可达的 TA"这一假设：
+
+- $N$ 个地面客户端（车载终端、巡检传感器、便携医疗设备）+ 1 个边缘/云服务器 GS
+- 部分客户端由攻击者控制（**拜占庭**），可发送任意有毒更新、可跨轮合谋、可与 GS 合谋
+- GS **恶意**：可推断、可篡改聚合结果、可谎报验证通过、可选择性丢弃诚实客户端
+- **没有 TA 在每轮在线**（跨域 UAV 任务、卫星回传间歇、TA 可达性无法保证）
+- 掉线率 15–18%（§4.2）
+
+典型应用：跨行政区的车联网协同感知模型训练——车辆归属不同运营商，没有共同的在线权威机构，但需要防止某一方（含云运营方）投毒或篡改。
+
+### 5.B.2 要解决的问题
+
+| 问题 | 现有方案的处置 | 缺陷（原文核实） |
+|---|---|---|
+| **服务器恶意 + 可验证** | 仅 P10 DSVFL：TA 每轮验 $\varpi_e\stackrel{?}{=}\sigma_e^Z$ | **TA 每轮在线 = 可用性与性能单点瓶颈**；P10 的 TA 是"完全可信，不与任何人合谋"的强假设 |
+| **拜占庭投毒** | 仅 P11 PPBR：边层 CLDP 聚类 + 云层 PLHE 范数中位数裁剪 | P11 是 **HFL 且边缘半诚实**；其 trimmed k-means **有随机初始化 → 非确定性 → 客户端无法复算验证**；PLHE 范数计算需"云盲化 → 边缘解密开方 → 回传"，**给了边缘解密能力**（扩大攻击面） |
+| **二者同时** | **无任何方案** | P10 future work 明写"defend against Byzantine/model poisoning attacks"；P11 无可验证性 |
+| **密文域加权** | 仅 P6 FedPHE（CKKS 同态乘明文凭据） | 需 KDC 周期在线下发 $\Delta_i=(r_i+r_{d,i})/p_i^t$；权重 $p_i^t$ 由 PS 单方计算、**客户端不可审计** |
+
+**VRSA-FL 的核心命题**：**可验证性不必来自一个可信验证者，而可以来自"公开输入 + 确定性函数 + 人人可复算"。** 只要鲁棒筛选的输入是公开的低维量、筛选算法是确定性的、聚合是加性同态的，那么**每个客户端都能独立重算出服务器本应得到的结果**，从而无需 TA。P11 之所以不可验证，根因不在于它是 HFL，而在于它用了**非确定性的 k-means** 和**需要私密交互的密文范数**。VRSA-FL 把这两处都换成确定性、公开的构造。
+
+### 5.B.3 创新点与设计目标
+
+**创新点 1 —— 公开低维 CLDP 指纹（把鲁棒判定移出密文域）**
+
+每个客户端上传一个 $d'$ 维（$d'\approx8\sim16$）的**公开指纹** $\phi_i^r$，内容为：
+
+$$\phi_i^r = \Big(\underbrace{\text{sign-ratio}_G(\Delta_i^r)}_{3\text{ 维：正/负/零比例，同 P11 算法 2}},\ \underbrace{\|\Delta_i^r\|_2}_{1\text{ 维}},\ \underbrace{\tfrac{\langle\Delta_i^r,\,w^{r-1}\rangle}{\|\Delta_i^r\|_2\|w^{r-1}\|_2}}_{1\text{ 维：方向余弦}},\ \underbrace{\text{TopK-坐标均值}}_{d'-5\text{ 维}}\Big) + \eta_i^r$$
+
+其中 $\eta_i^r$ 为 CLDP 扰动（沿用 P11 的式 2，$d$ 换成 $d'$）：
+$$f(\vec y|\vec s)=\lambda\exp\!\big(-\varepsilon_\chi\min(\|\vec y-\vec s\|_2,\,L)\big),\qquad \lambda=\big[V_L+e^{-\varepsilon_\chi L}(2d'L'^{d'}-V_L)\big]^{-1}$$
+
+**为什么公开指纹不泄露隐私**：① 维度极低（$d'\approx12$ vs 模型维度 $10^4\sim10^7$）；② CLDP 扰动提供 $\varepsilon_\chi$-隐私（P11 Lemma 1）；③ 符号统计与范数属于"梯度的一阶统计摘要"，P11 已论证其经 CLDP 扰动后无法反推本地模型。**通信代价：约 100 字节 vs 密文的 0.62 MB，可忽略。**
+
+**关键改进：坐标子集 $G$ 由信标决定，不由服务器决定。** P11 是"云先选出 $\iota$ 个随机坐标 $G$ 广播"——**恶意云可以挑选使良性客户端看起来异常的 $G$**。VRSA-FL 用公开信标派生：
+$$G^r = \texttt{PRG}\big(H(w^{r-1}\|r)\big)\bmod \binom{d}{\iota}$$
+所有客户端与服务器都能算出同一个 $G^r$，服务器无从操纵。这是 P11 未处理的一个信任假设，VRSA-FL 消除了它。
+
+**创新点 2 —— 确定性 MAD 排除规则（可复算 ⇒ 可验证）**
+
+P11 用 trimmed k-means（有随机初始化，不同运行结果不同 → **客户端无法复算 → 不可验证**）。VRSA-FL 改用全确定性规则：
+
+$$\textbf{Algorithm RobustSelect}(\{\phi_i^r\}_{i\in A_1},\ \beta,\ \kappa_{\text{mad}})$$
+1. 逐坐标中位数：$\tilde\phi_c=\text{median}_{i\in A_1}(\phi_{i,c}^r)$，$c=1..d'$
+2. 逐坐标绝对中位差：$\text{MAD}_c=\text{median}_{i\in A_1}\big(|\phi_{i,c}^r-\tilde\phi_c|\big)$
+3. 离群分数：$\ \sigma_i=\max_{1\le c\le d'}\dfrac{|\phi_{i,c}^r-\tilde\phi_c|}{\text{MAD}_c+\epsilon_0}$（$\epsilon_0=10^{-6}$ 防除零）
+4. 升序排序，**并列时按客户端 ID 升序**（保证全序 ⇒ 确定性）
+5. 保留前 $\lceil(1-\beta)|A_1|\rceil$ 个，得排除集 $S^r$
+
+**性质**：① 中位数与 MAD 的断裂点均为 50%，故 $\beta<0.5$ 时恶意方无法操纵（与 P11 的 $\beta<0.5$ 假设一致）；② 全序 + 无随机 ⇒ **任何客户端用同样的公开输入必得同样的 $S^r$**；③ 复杂度 $O(d'|A_1|\log|A_1|)$，$d'=12,|A_1|=20$ 时微秒级，**UAV 端可忽略**。
+
+**创新点 3 —— 加性哈希标签：无 TA 的聚合正确性验证**
+
+定义公开信标派生的加性哈希（$\boldsymbol\beta^r\in\mathbb Z_p^n$，$p\approx2^{128}$，由 $\texttt{PRG}(H(w^{r-1}\|r))$ 生成）：
+$$\mathcal T(x)\triangleq\langle x,\boldsymbol\beta^r\rangle=\sum_{\ell=0}^{n-1}x_\ell\beta_\ell^r \bmod p$$
+
+**加性**：$\mathcal T(x+y)=\mathcal T(x)+\mathcal T(y)\bmod p$（逐分量加法下精确成立）。
+
+协议：
+- 客户端 $i$ 上传时**签名** $(i,r,\ \mathcal T(c_{i,0}^r),\ \text{SHA256}(c_{i,0}^r))$，签名公开
+- 服务器必须广播 $(S^r,\ c_0^{(S^r)},\ \mathcal T^{(S^r)})$
+- **任一客户端本地验证三条等式**：
+$$\text{(V1)}\quad S^r \stackrel{?}{=} \textbf{RobustSelect}(\{\phi_i^r\}_{i\in A_1},\beta,\kappa_{\text{mad}})\qquad(\text{排除集正确})$$
+$$\text{(V2)}\quad \mathcal T^{(S^r)} \stackrel{?}{=} \sum_{i\in S^r}\mathcal T(c_{i,0}^r)\bmod p\qquad(\text{标签与声称的子集一致，用签名过的 }\mathcal T(c_{i,0}^r))$$
+$$\text{(V3)}\quad \mathcal T^{(S^r)} \stackrel{?}{=} \big\langle c_0^{(S^r)},\boldsymbol\beta^r\big\rangle \bmod p\qquad(\text{标签与广播的聚合密文一致})$$
+
+**检测能力**：
+- 服务器**丢弃**诚实客户端 $i$ ⇒ V1 失败（$S^r$ 与公开规则不符）
+- 服务器**篡改** $c_0^{(S)}$ 为 $c_0^{(S)}+\delta$ ⇒ V3 要求 $\langle\delta,\boldsymbol\beta^r\rangle\equiv0\bmod p$，而 $\boldsymbol\beta^r$ 对服务器是**信标决定的、不可预测的**，由 Schwartz–Zippel 引理，$\Pr\le n/p\approx2^{-100}$（$n=2^{14},p\approx2^{128}$）
+- 服务器**替换**某客户端的密文 ⇒ 该客户端的签名 $\mathcal T(c_{i,0}^r)$ 不匹配 ⇒ V2 失败
+- 服务器**对不同客户端广播不同 $S^r$** ⇒ 各客户端交叉比对（在 5.B 的广播模型下，客户端可在下一轮上传时附带上一轮 $S^r$ 的哈希，形成链式一致性检查）
+
+**与 P10 的本质区别**：P10 的验证等式 $\varpi_e=\sigma_e^Z$ **只有 TA 能算**（TA 持有 $Z$）；VRSA-FL 的 V1–V3 **每个客户端都能算**（输入全公开）。**验证者从"一个每轮必须在线的可信机构"变成"任意一个诚实客户端"** —— 这是把 P10 的集中式验证去中心化的关键。
+
+**创新点 4 —— 零交互的鲁棒聚合（对比 P11 的密文范数交互）**
+
+P11 算 $\|m_i\|_2$ 需要：云在 $[\cdot]_{A_i}$ 上算 $[(x_i')^2\|m_i\|^2]$ → 发回边缘 → 边缘用 $sk_{A_i}$ 解密开方 → 再加密回传 $[\|m_i\|_2]_A$ → 云取中位数。**4 次跨层消息 + 边缘解密能力 + 一次开方**。
+
+VRSA-FL 完全不需要：范数 $\|\Delta_i^r\|_2$ **由客户端自己在明文域算好、加 CLDP 噪声后公开**。裁剪也在客户端本地做（标准 DP-FL 式裁剪）：
+$$\Delta_i^{r,\text{clip}} = \Delta_i^r\cdot\min\!\Big(1,\frac{B_{\text{clip}}}{\|\Delta_i^r\|_2}\Big)$$
+**零交互、零乘法深度、零边缘解密能力。**
+
+**创新点 5 —— 密文域加权（补齐 P10 的缺口）**
+
+P10 只支持加性 Paillier 聚合，FedAvg 权重必须在明文约定。VRSA-FL 用 5.A 的客户端侧预缩放：$m_i^r=\texttt{Encode}(\lfloor Q\alpha_i\Delta_i^{r,\text{clip}}\rceil)$，$\alpha_i=d_i/|S^r|$（**注意分母用 $|S^r|$ 而非 $N$，因为排除集是公开可算的，所以每个客户端能本地算出正确的 $\alpha_i$**）。服务器只做纯加法，得到 $\sum_{i\in S^r}\alpha_i\Delta_i^{r,\text{clip}}$ —— **加权聚合 + 鲁棒排除 + 可验证，三者同时成立**。
+
+**设计目标汇总**：
+
+| 目标 | 达成方式 |
+|---|---|
+| 服务器恶意模型下的可验证性 | V1–V3，全员可复算，**无 TA** |
+| 抗拜占庭投毒 | 公开 CLDP 指纹 + 确定性 MAD 排除 + 客户端侧裁剪，$\beta<0.5$ |
+| 密文域加权聚合 | 客户端预缩放 $\alpha_i$，服务器纯加法，零深度 |
+| 抗掉线 | 继承 5.A（任意阶段） |
+| 通信 | 指纹 ~100 B + 标签 32 B + 签名 ~64 B，相对密文可忽略 |
+| UAV 端计算 | RobustSelect $O(d'|A_1|\log|A_1|)$，微秒级；无需 PLHE、无需 k-means、无需开方 |
+
+### 5.B.4 威胁模型
+
+| 实体 | 信任假设 | 能力 | 被防住的攻击 |
+|---|---|---|---|
+| **服务器 / GS** | **恶意（最强假设）** | 篡改 $c_0^{(S)}$；谎报 $S^r$；对不同客户端发不同视图；丢弃诚实方密文；重放旧轮；与 $\le\tau-1$ 个客户端合谋 | V1 防谎报排除集；V3 防篡改（$\le n/p$ 漏检）；V2 防替换（签名）；链式哈希防分裂视图与重放 |
+| **拜占庭客户端** | 恶意，比例 $\beta<0.5$，可跨轮合谋、可依据历史消息优化攻击（P11 的高级拜占庭假设） | 发送任意 $m_i^r$；发送伪造指纹 $\phi_i^r$；拒绝参与；与 GS 合谋 | MAD 排除（断裂点 50%）；客户端侧裁剪界定单个贡献；**伪造指纹无效**——指纹与实际密文的一致性由 V4（见下）保证 |
+| **合谋：GS + $\tau-1$ 个客户端** | — | 汇总所有已知信息 | 由 5.A 定理 5.A.3，$s_h$ 仍隐藏；由 V1–V3，篡改仍被剩余诚实方检测 |
+| **掉线** | 任意比例、任意阶段 | — | 5.A 的子集重选 + 掩码层 |
+| **信道** | 公共、可窃听、可注入（但客户端有签名密钥） | — | 签名 + 信标随机数 |
+| **不假设** | **无 TA、无 TEE、无 KDC、无任何在线可信机构** | — | — |
+
+**新增验证等式 V4（指纹-密文绑定，防"指纹说一套、密文做一套"）**：
+
+恶意客户端可以发布一个"看起来良性"的 $\phi_i^r$，同时在 $c_{i,0}^r$ 里藏一个有毒的 $\Delta_i^r$。VRSA-FL 的处置：
+
+$$\text{(V4)}\qquad \mathcal T(c_{i,0}^r) \stackrel{?}{=} \mathcal T\big(v^rb_i\big) + \mathcal T\big(\texttt{Encode}(\lfloor Q\alpha_i\Delta_i^{r,\text{clip}}\rceil)\big) + \mathcal T(e_{i,0}^r) \bmod p$$
+
+客户端 $i$ 在上传时**同时签名承诺** $(\phi_i^r,\ \mathcal T(m_i^r))$，其中 $m_i^r=\texttt{Encode}(\lfloor Q\alpha_i\Delta_i^{r,\text{clip}}\rceil)$ 是它自己算的明文编码。由于 $\phi_i^r$ 与 $\mathcal T(m_i^r)$ 都由同一个 $\Delta_i^{r,\text{clip}}$ 确定性导出，客户端无法在两者之间"分裂"。
+
+**诚实声明**：V4 保证的是**一致性**（指纹确实来自被加密的那个更新），**不是完备的投毒检测**。若拜占庭客户端构造一个"统计指纹落在良性范围内但语义有毒"的更新（如精调的 IPM/MinMax），V4 与 MAD 都无法检测——**P11 也做不到**（P11 的边层过滤同样只用 3 维符号统计）。VRSA-FL 的检测能力**与 P11 算法 2 同源同界**（同样的 CLDP 指纹），但在**零交互、零边缘解密、全公开可验证**三个维度上严格优于 P11。这是本报告对"改进"的诚实界定：**不是检测能力更强，而是在同等检测能力下去掉了 P11 的全部结构性代价，并额外获得了 P11 完全没有的可验证性。**
+
+### 5.B.5 方案设计
+
+#### 实体
+
+| 实体 | 数量 | 长期持有 | 每轮职责 |
+|---|---|---|---|
+| 客户端 $C_i$ | $N$ | 5.A 的全部秘密 + 签名密钥 $(sk_i^{sig},pk_i^{sig})$ | 本地训练 → 裁剪 → 算指纹（加 CLDP）→ 加密 → 上传 + 签名 → 复算 $S^r$ → 验证 V1–V4 → 贡献 $D_j^{(S^r)}$ → 解密更新 |
+| 服务器 GS | 1 | 所有 $pk_i$、所有 $pk_i^{sig}$、$a$、$B$ | 收集密文与指纹 → 广播 $A_1$ → 计算 $S^r$（**必须与公开规则一致**）→ 聚合 → 广播 $(S^r,c_0^{(S^r)},\mathcal T^{(S^r)})$ → 收集 $D_j$ → 广播 $M^{(S^r)}$ |
+| ~~TA~~ | **0** | — | **不存在** |
+
+#### 一轮完整协议（8 步）
+
+**Step 0（信标）**：全体本地计算
+$$G^r=\texttt{PRG}(H(w^{r-1}\|r)),\qquad \boldsymbol\beta^r=\texttt{PRG}(H(w^{r-1}\|r\|\text{`beta'})),\qquad v^r=\texttt{PRPG}(r,B)$$
+
+**Step 1（客户端：训练 + 裁剪 + 指纹）**
+$$\Delta_i^r = w_i^{r,\text{local}}-w^{r-1},\qquad \bar\Delta_i^r=\Delta_i^r\cdot\min\Big(1,\tfrac{B_{\text{clip}}}{\|\Delta_i^r\|_2}\Big)$$
+$$\phi_i^r=\texttt{CLDP}\big(\text{sign-ratio}_{G^r}(\bar\Delta_i^r)\,\|\,\|\bar\Delta_i^r\|_2\,\|\,\cos(\bar\Delta_i^r,w^{r-1})\,\|\,\text{TopK-mean}\big)$$
+
+**Step 2（客户端：预缩放 + 加密 + 上传）**
+$$m_i^r=\texttt{Encode}\big(\lfloor Q\alpha_i\bar\Delta_i^r\rceil\big),\qquad c_{i,0}^r=v^rb_i+m_i^r+e_{i,0}^r$$
+$$C_i\to GS:\quad \big(i,\ r,\ c_{i,0}^r,\ \phi_i^r,\ \mathcal T(c_{i,0}^r),\ \mathcal T(m_i^r),\ \text{Sig}_{sk_i^{sig}}(\cdot)\big)$$
+
+**Step 3（服务器：广播上传集）** $GS\to$ all：$A_1=\{i:\text{收到有效签名上传}\}$
+
+**Step 4（全员并行：确定性鲁棒选择）** 每个实体独立计算
+$$S^r=\textbf{RobustSelect}(\{\phi_i^r\}_{i\in A_1},\beta,\kappa_{\text{mad}})$$
+服务器广播它算出的 $S^r_{GS}$；**每个客户端比对 $S^r_{GS}\stackrel{?}{=}S^r$**，不一致则本轮拒绝并向其他客户端广播告警（V1）。
+
+**Step 5（服务器：聚合 + 广播验证材料）**
+$$c_0^{(S^r)}=\sum_{i\in S^r}c_{i,0}^r,\qquad \mathcal T^{(S^r)}=\sum_{i\in S^r}\mathcal T(c_{i,0}^r)\bmod p$$
+$GS\to$ all：$(S^r_{GS},\ c_0^{(S^r)},\ \mathcal T^{(S^r)})$
+
+**Step 6（客户端：验证）** 逐个检查
+$$\text{(V1)}\ S^r_{GS}=S^r\qquad \text{(V2)}\ \mathcal T^{(S^r)}=\textstyle\sum_{i\in S^r}\mathcal T(c_{i,0}^r)\qquad \text{(V3)}\ \mathcal T^{(S^r)}=\langle c_0^{(S^r)},\boldsymbol\beta^r\rangle$$
+$$\text{(V4)}\ \text{对每个 }i\in S^r:\ \mathcal T(c_{i,0}^r)\ \text{与}\ \mathcal T(m_i^r),\phi_i^r\ \text{的签名一致}$$
+任一失败 ⇒ 拒绝本轮，广播告警，回退到 $w^{r-1}$。
+
+**Step 7（部分解密 + 全局更新）** 同 5.A 步骤 4–6：
+$$D_j^{(S^r)}=v^ra\cdot\bar s_j^{(S^r)}+\text{masks}+e_j^*,\qquad M^{(S^r)}=c_0^{(S^r)}+\sum_j D_j^{(S^r)}$$
+$$w^r = w^{r-1}+\frac1Q\texttt{Decode}\big(M^{(S^r)}\big)$$
+
+**Step 8（链式一致性）** 下一轮上传时附带 $H(S^{r}\|c_0^{(S^r)}\|\mathcal T^{(S^r)})$，使"分裂视图"在下一轮暴露。
+
+#### 闭环公式推导
+
+**定理 5.B.1（鲁棒聚合的正确形式）**：设 $S^r$ 为 RobustSelect 输出，$H\subseteq S^r$ 为诚实子集，$B=S^r\setminus H$ 为漏网的拜占庭子集（$|B|\le\beta|A_1|$）。则
+$$w^r = w^{r-1} + \sum_{i\in H}\alpha_i\bar\Delta_i^r + \underbrace{\sum_{i\in B}\alpha_i\bar\Delta_i^r}_{\text{有界扰动}} + \varepsilon_{\text{crypto}}$$
+其中
+$$\Big\|\sum_{i\in B}\alpha_i\bar\Delta_i^r\Big\|_2 \le \sum_{i\in B}\alpha_i\|\bar\Delta_i^r\|_2 \le \frac{|B|}{|S^r|}B_{\text{clip}} \le \beta\cdot B_{\text{clip}}$$
+
+**证明**：由定理 5.A.1，$M^{(S^r)}=\sum_{i\in S^r}m_i^r+\text{噪声}$，且 $m_i^r=\texttt{Encode}(\lfloor Q\alpha_i\bar\Delta_i^r\rceil)$。除以 $Q$ 解码即得。扰动界由客户端侧裁剪 $\|\bar\Delta_i^r\|_2\le B_{\text{clip}}$ 与 $\sum_{i\in S^r}\alpha_i=1$ 直接给出。$\blacksquare$
+
+**含义**：**拜占庭的影响被硬性限制在 $\beta\cdot B_{\text{clip}}$ 以内**，与 P11 的范数中位数裁剪 $\|m_i\|_2\le M$ 提供同型保证，但 P11 需要 4 次跨层交互 + 边缘解密，VRSA-FL 需要 0 次。
+
+**定理 5.B.2（可验证性，G2）**：若恶意服务器输出 $\hat M\ne M^{(S^r)}$ 或 $\hat S\ne S^r$，则任一诚实客户端在 Step 6 检测出的概率 $\ge 1-(n/p)-\text{negl}(\lambda)$。
+
+**证明**：分三种偏离情形。
+1. $\hat S\ne S^r$：RobustSelect 是公开输入上的确定性函数，诚实客户端复算得 $S^r$，V1 必然失败（检测概率 1）
+2. $\hat S=S^r$ 但 $c_0^{(\hat S)}=c_0^{(S^r)}+\delta$，$\delta\ne0$：V3 要求 $\langle c_0^{(S^r)}+\delta,\boldsymbol\beta^r\rangle\equiv\mathcal T^{(S^r)}\equiv\langle c_0^{(S^r)},\boldsymbol\beta^r\rangle$，即 $\langle\delta,\boldsymbol\beta^r\rangle\equiv0\bmod p$。$\delta\in R_q^n$ 非零且服务器在 $\boldsymbol\beta^r$ 公布前已固定 $\delta$（$\boldsymbol\beta^r$ 由 $H(w^{r-1}\|r)$ 派生，服务器无法预测下一轮 $w^{r-1}$ 之后的信标——**注**：若服务器已知 $w^{r-1}$，则 $\boldsymbol\beta^r$ 可算，此时需改用客户端提交-揭示：各客户端先承诺 $b_i^r=H(\beta_i^r)$，服务器聚合后揭示，$\boldsymbol\beta^r=\sum_i\beta_i^r$。本报告采用后者作为默认，见下方"实现备注"），由 Schwartz–Zippel，$\Pr[\langle\delta,\boldsymbol\beta^r\rangle\equiv0]\le n/p$
+3. 替换某 $c_{i,0}^r$：签名验证失败（EUF-CMA），概率 $\text{negl}(\lambda)$ $\blacksquare$
+
+> **实现备注（消除信标可预测性）**：$\boldsymbol\beta^r$ 改为**分布式信标**——每客户端采样 $\beta_i^r\leftarrow U(\mathbb Z_p^n)$，Step 2 上传承诺 $\text{com}_i=H(\beta_i^r)$，Step 6 之后（即服务器已提交 $c_0^{(S^r)}$ 之后）揭示 $\beta_i^r$，令 $\boldsymbol\beta^r=\sum_{i\in S^r}\beta_i^r\bmod p$。由于服务器在揭示前已固定 $c_0^{(S^r)}$，$\boldsymbol\beta^r$ 对它仍是均匀的 ⇒ Schwartz–Zippel 适用。这是标准的 commit-reveal 随机信标构造，增加 1 轮消息（各 32 B 承诺 + $n\log p$ 比特揭示）。
+
+**定理 5.B.3（隐私）**：继承 5.A 定理 5.A.3。额外需说明**公开指纹 $\phi_i^r$ 不破坏隐私**：由 CLDP 定义（P11 式 1），对任意 $\vec s,\vec s'$ 与输出 $\vec y$，
+$$f(\vec y|\vec s)\le e^{\varepsilon_\chi\cdot d(\vec s,\vec s')}\cdot f(\vec y|\vec s'),\qquad d(\vec s,\vec s')=\|\vec s-\vec s'\|_2$$
+即 $\phi_i^r$ 满足 $\varepsilon_\chi$-CLDP（P11 Lemma 1），且由 P11 Theorem 2，扰动质心无偏、二阶误差有界：
+$$\mathbb E[\vec y_\kappa]=\vec s_\kappa,\qquad \mathbb E\|\vec y_\kappa-\vec s_\kappa\|_2^2\le\frac{3L^2(e^{\varepsilon_\chi c_L}-1)}{5|C_\kappa|(e^{\varepsilon_\chi c_L}+1)}+\frac{L^2}{|C_\kappa|}$$
+**这保证 RobustSelect 的判定在 CLDP 噪声下仍稳定**（误差随 $|C_\kappa|$ 增大而缩小）。
+
+#### 开销核算
+
+| 项目 | P10 DSVFL | P11 PPBR | **VRSA-FL** |
+|---|---|---|---|
+| 可信机构在线 | **TA 每轮** | 无 | **无** |
+| 服务器模型 | 恶意 | 半诚实 | **恶意** |
+| 抗拜占庭 | ❌（future work） | ✅ | ✅ |
+| 可验证 | ✅（仅 TA） | ❌ | ✅（**全员**） |
+| 密文域加权 | ❌ | ✅ | ✅ |
+| 每轮跨层交互次数（鲁棒筛选） | — | **4**（云↔边两次 + 开方 + 回传） | **0** |
+| 边缘/UAV 需要的解密能力 | — | ✅（$sk_{A_i}$ 开方） | **❌（零私钥）** |
+| 鲁棒筛选计算 | — | trimmed k-means $O(I n_i k d)$ | MAD $O(d'\|A_1\|\log\|A_1\|)$ |
+| 密文通信/轮 | 19.84 MB（$d=10^4$） | 36.4–133.2 MB | **1.24 MB**（承 5.A） |
+| 验证通信/轮 | 签名 $b_2$ | 无 | 指纹 ~100 B + 标签 32 B + 签名 64 B ≈ **200 B** |
+| 抗掉线 | ✅（$m-\tau$） | ✅（双层 SA） | ✅（任意阶段） |
+
+#### 局限（诚实声明）
+
+1. **投毒检测能力与 P11 同源同界**：都基于低维统计指纹。对"统计上不可区分"的高级攻击（精调 IPM/MinMax），两者均无法检测。要突破需引入语义级检测（如基于损失曲率或影响函数），这需要在密文域做非线性运算，超出本报告零深度约束。
+2. **分布式信标增加 1 轮消息**（commit-reveal），在延迟敏感场景（§4.2）需权衡。
+3. **$\beta<0.5$ 的硬性要求**：中位数/MAD 的断裂点是 50%，超过即失效。P11 同样有此限制（$\beta<0.5$）。
+4. **告警的实际效力**：客户端"拒绝本轮 + 广播告警"是一种**拒绝服务式惩罚**——它不能强迫服务器诚实，但能让服务器的篡改**无收益**（本轮训练作废，攻击者无法从中获利）。这是无在线权威时可达的最强形式；若需要**问责**（identify 并驱逐作恶服务器），需引入声誉链/区块链（§4.3 的 [Blockchain-based Trustworthy HFL, 2024](https://ieeexplore.ieee.org/abstract/document/10453360/) 路线），代价是额外延迟。
+5. **CLDP 参数需调优**：$\varepsilon_\chi,L,L'$ 的选择沿用 P11 的 $l=8,L=6,L'=7$，但 P11 是 $d=3$，VRSA-FL 用 $d'\approx12$，需重新按 P11 Theorem 2 的界标定。**本报告未做实验标定，属待办。**
+
+---
+
+## 5.C MUFA-HFL：迁移免疫的无偏加权 UAV 层次联邦学习
+
+**MUFA-HFL = Mobility-Unbiased Federated Aggregation HFL**
+**定位**：端-UAV-云三层／多密钥（5.A 内核）／**UAV 零私钥**／**精确无偏加权聚合（与 UAV-客户端关联划分完全解耦）**／残差压缩／无需重加密代理的跨 UAV 接力
+
+### 5.C.1 场景
+
+**UAV-Assisted HFL**，具体到可落地的形态：
+
+- **$L$ 架旋翼 UAV** 在目标区域（灾区、大型农田、边境线、临时赛事场馆）按轨迹巡飞，作为**空中边缘聚合节点**；每架 UAV 搭载 Jetson Orin 级机载计算（§4.1(c)：67 TOPS / 7–25 W）
+- **$N$ 个地面客户端**（车载终端、便携医疗设备、巡检传感器、农户手持终端），发射功率 0.28–0.32 W，通过 sub-6 GHz 链路上行（§4.1(a)）
+- **1 个地面站/云**，通过卫星或长距链路与 UAV 回传
+- UAV 覆盖半径 $d_{\text{thr}}=158$ m（§4.1(a) 的 Zhong 2022 取值），飞行高度 $z=50$ m
+- **UAV 持续移动 ⇒ 客户端的关联 UAV 每轮都可能变化**（handover）
+- **客户端样本量高度不均**：一辆巡逻车可能采集 $10^4$ 条，一个便携传感器只有 $10^2$ 条
+- 掉线率 15–18%（§4.2）；UAV 自身也会因电量/天气掉线
+- **UAV 物理暴露**，被俘获概率显著高于机房设备（§4.3）
+
+**这是本报告 4 个方案中最贴近"实际应用场景"的一个**：它不要求任何常驻可信机构，不要求 UAV 有 GPU，不要求客户端之间直连，且能容忍 UAV 与客户端同时掉线。
+
+### 5.C.2 要解决的问题
+
+| 问题 | 现有方案的处置 | 缺陷（原文/文献核实） |
+|---|---|---|
+| **① 两级聚合的加权有偏** | P8 SKHE：边层样本数加权（原文公式 7）+ 云层均匀平均 $\frac1M$（原文公式 13）；P11 PPBR：边层 SA 均值 $\frac1{n_i'}$ + 云层 SA 均值 $\frac1{l'}$ | **两者数学上都有偏**，见下方定理 5.C.1 的精确刻画。UAV 场景下各 UAV 覆盖设备数天然极不均衡，偏差被系统性放大 |
+| **② 边缘节点持私钥 → 俘获即泄露** | P8：边缘持 ECC 私钥的 Shamir 份额 $y_i$，可算解密份额 $DS_i=c_0(\mu_iy_i)+e_i$；P11：边缘 $A_i$ 自持 $sk_{A_i}$ 用于解密盲化范数并开方 | **P11 更严重**：$sk_{A_i}$ 泄露 ⇒ 该边层**历史所有轮次**的聚合可被回溯推理（§4.3）。两者均无前向安全 |
+| **③ 客户端跨边迁移时密钥与权重如何一致** | **11 篇无一处理**（§2.5） | P8/P11 都假设客户端-边缘绑定在一轮内固定；P11 的 SA 要求客户端与新边层重新做 $O(n'^2)$ 密钥协商 |
+| **④ 跨 UAV 密文转换 / re-encryption proxy** | **11 篇无一处理**（开放问题 8） | 若各 UAV 持不同密钥，客户端迁移后密文无法直接被新 UAV 聚合 |
+| **⑤ UAV-云回传带宽** | P11 的 PLHE 密文 36.4–133.2 MB/轮 | §4.1(a) 的 10 MHz 链路上不可行 |
+| **⑥ UAV 端 HE 算力** | P6 FedPHE 需 poly 8192 + TenSEAL + GPU；P2 CDKS 的 mult+relin 521–1845 ms | §4.1(c)：Jetson 上 CKKS 加法 5.8 ms 可行，乘法/relin 不可行 |
+
+**定理 5.C.1（P8/P11 云层均匀平均的偏差，本报告给出精确刻画）**
+
+设边缘/UAV $j$ 覆盖的客户端集合为 $U_j$（$\{U_j\}_{j=1}^L$ 构成分划），$d_i$ 为客户端 $i$ 的样本数，$\Delta_i$ 为其本地增量。
+
+**FedAvg 的正确目标**：
+$$g^{\text{FedAvg}} = \frac{\sum_{i=1}^N d_i\Delta_i}{\sum_{i=1}^N d_i}$$
+
+**P8 SKHE 的实际输出**（边层局部归一化 + 云层均匀平均）：
+$$g^{\text{SKHE}} = \frac1L\sum_{j=1}^L\frac{\sum_{i\in U_j}d_i\Delta_i}{\sum_{i\in U_j}d_i} = \frac1L\sum_{j=1}^L\frac{D_j}{D}\cdot\Big(\text{以 }D_j\text{ 归一化的边层聚合}\Big)\cdot\frac{D}{D_j}$$
+记 $D_j=\sum_{i\in U_j}d_i$，$D=\sum_jD_j$，则
+$$g^{\text{SKHE}} = \sum_{j=1}^L\frac{1}{L\,D_j}\sum_{i\in U_j}d_i\Delta_i \ne \sum_{i=1}^N\frac{d_i}{D}\Delta_i = g^{\text{FedAvg}}$$
+
+**偏差**：
+$$g^{\text{SKHE}}-g^{\text{FedAvg}} = \sum_{i=1}^N d_i\Delta_i\cdot\Big(\frac{1}{L\,D_{j(i)}}-\frac1D\Big) = \sum_{i=1}^N d_i\Delta_i\cdot\frac{D-L\,D_{j(i)}}{L\,D\,D_{j(i)}}$$
+
+其中 $j(i)$ 是 $i$ 所属的 UAV。**当且仅当所有 $D_j$ 相等（即 $D_j=D/L\ \forall j$）时偏差为 0**。
+
+**量化影响**：设 $D_j$ 的变异系数为 $c_v=\text{std}(\{D_j\})/\text{mean}(\{D_j\})$，则偏差范数量级为
+$$\|g^{\text{SKHE}}-g^{\text{FedAvg}}\| \approx \frac{c_v}{L}\cdot\frac{1}{\bar D}\Big\|\sum_j (D_j-\bar D)\sum_{i\in U_j}d_i\Delta_i\Big\| = O(c_v)\cdot\|g^{\text{FedAvg}}\|$$
+
+**UAV 场景下 $c_v$ 必然很大**：由 §4.1(a) 的覆盖半径 158 m 与概率 LoS 模型，UAV 在不同位置（城市峡谷 vs 开阔农田）的关联设备数可相差一个数量级，$c_v$ 轻松达到 0.5–1.0。**即偏差与信号本身同量级**。P11 PPBR 的两级 SA 均值（$\frac1{n_i'}$ 与 $\frac1{l'}$）有完全相同的问题。
+
+> **这是我认为现有层次加密 FL 最实质的逻辑缺陷**：它不是效率问题也不是安全假设问题，而是**聚合算子本身算错了目标函数**。而且它被两篇 2025/2026 的顶刊论文同时忽略——P8 的边层还特意做了样本数加权（说明作者意识到了加权的重要性），却在云层退回了均匀平均，正好把边层的努力抵消掉。
+
+**补充发现（本报告核实原文后新增，且部分存疑）**：我逐字核对了 P8 SKHE 的公式 (7) 与 Algorithm 4，发现两个更深层的问题。
+
+**(i) 公式 (7) 的分母是密文 ⇒ 边层归一化需要密文除法**
+
+原文 Algorithm 3 第 8 行与正文都明确写：设备"encrypt the number of samples in their local datasets $[[|D_i|]]$"，且"encrypted dataset sample sizes $[[|D_i|]]$ submitted by each device are used to perform a weighted average aggregation"。故公式 (7) 的双方括号是**加密**语义：
+$$[[g_j^t]] = \frac{\sum_{i=1}^{|EN_j|}[[|D_i|]]\cdot[[g_i^t]]}{\sum_{i=1}^{|EN_j|}[[|D_i|]]}$$
+
+这意味着边层聚合需要：① **密文 × 密文乘法**（分子，$[[|D_i|]]\cdot[[g_i^t]]$）；② **密文除法**（整体）。
+
+- 对 ①，P8 原文 Table V 确实测了密文乘法，并写道"ciphertext multiplication remains highly efficient when the model size and number of devices are relatively small"——即**承认其效率依赖规模较小**，未给出大规模下的界
+- 对 ②，**CKKS 无原生除法**，标准做法是用 Newton–Raphson 迭代求倒数（每次迭代需 1 次密文乘法，收敛到 $k$ 位精度约需 $\log k$ 次），**每次除法消耗 $\log$ 级乘法深度 ⇒ 需要相应加长的模数链 ⇒ 密文体积膨胀**。我用 Grep 全文检索了 `division / divide / reciprocal / Newton / multiplicative depth / modulus chain / rescale`，**P8 原文除了一句泛泛的 FHE 能力介绍（"allowing third parties to carry out operations, such as addition, subtraction, multiplication, and division, directly on encrypted data"）外，未给出任何密文除法的实现方案、深度预算或模数链参数**
+
+> ⚠️ **存疑，需核对原文实现或联系作者**：这与 P8 报告的高效率数据存在张力——它声称"加法聚合比 xMK-CKKS 快 99.9%"、"服务器端比 xMK-CKKS 快 60.8%"，但如果边层每个 EN 每轮都要对 $|EN_j|$ 个密文做密文乘法再做密文除法，开销不应如此之低。**两种可能的解释**：(a) 实现中 $|D_i|$ 实际按**明文标量**处理（记号 $[[\cdot]]$ 是排版宽松），此时公式 (7) 退化为"密文-明文乘 + 明文标量除"，只需 1 层深度，效率数据可信；(b) 实现中确实做了密文除法，则 Table V 与 Fig.3 的对比未计入这部分成本。**本报告倾向于 (a)**——因为若真是 (b)，P8 宣称的"仅用加法聚合"的效率优势将不成立，而它是该论文的核心卖点之一。
+>
+> **但无论是 (a) 还是 (b)，定理 5.C.1 的偏差结论都成立**：(a) 情形下边层是明文标量归一化 $\frac{\sum d_i\Delta_i}{D_j}$、云层是 $\frac1M$ 均匀平均，正是定理 5.C.1 所刻画的形式；(b) 情形下偏差相同，只是额外背上密文除法的深度成本。**这个补充发现强化了而非削弱了 MUFA-HFL 的动机**：把归一化推迟到解密后的明文域，既消除偏差（定理 5.C.2），又**彻底避免密文除法**（零乘法深度）。
+
+**(ii) 加密样本数本身是不必要的隐私开销**
+
+$|D_i|$（本地样本数）在 FedAvg 体系中是**标准公开元数据**——P4 SecFed 用 $\delta_i=size_i/\sum size$、P10 DSVFL 用数据集大小加权、中文笔记《联邦学习的加权方式》列出的第 1 类加权 $\alpha_i=n_i/\sum_jn_j$ 都直接使用明文样本数。P8 选择加密 $|D_i|$，付出了密文乘法/除法的代价，换来的隐私收益是"隐藏各设备的样本规模"。**判断**：在多数实际 FL 部署中这个收益不值得该代价，而它带来的深度消耗直接限制了可扩展性。MUFA-HFL 采用明文 $d_i$（见其局限 2 对该选择的诚实权衡说明）。
+
+### 5.C.3 创新点与设计目标
+
+**创新点 1 —— 全局整数预缩放 + 两级纯加法 ⇒ 精确无偏，且与划分解耦**
+
+客户端加密的是**未经任何归一化的整数加权增量**：
+$$m_i^r \triangleq \texttt{Encode}\big(\lfloor Q\cdot d_i\cdot\bar\Delta_i^r\rceil\big)\in R$$
+其中 $Q$ 为全局定点标度（公开常数），$d_i$ 为**公开**的样本数，$\bar\Delta_i^r$ 为裁剪后的增量。
+
+UAV $j$ 只做密文加法（**不做任何归一化，不需要知道 $D_j$**）：
+$$A_j^r = \sum_{i\in U_j\cap S^r}ct_{i,0}^r$$
+
+云只做密文加法（**不需要知道 $L$ 或任何 $D_j$**）：
+$$C^r = \sum_{j=1}^L A_j^r$$
+
+客户端解密后**在明文域**除以公开的 $D_{S^r}=\sum_{i\in S^r}d_i$：
+$$\boxed{\;w^r = w^{r-1} + \frac{1}{Q\cdot D_{S^r}}\cdot\texttt{Decode}\big(M^r\big)\;}$$
+
+**为什么这样是无偏的**（定理 5.C.2 证明）：因为归一化被**推迟到解密之后的明文域**，而 $D_{S^r}$ 是公开元数据（样本数不是隐私），所以除法不需要任何同态运算 ⇒ **零乘法深度、零交互、零边缘私钥**。而 P8/P11 之所以有偏，正是因为它们**在密文域做了局部归一化**，把 $D_j$ 的信息"焊死"进了密文，云层无法再修正。
+
+**为什么与划分解耦**：$\sum_j\sum_{i\in U_j\cap S}(\cdot)=\sum_{i\in S}(\cdot)$ 对**任意分划** $\{U_j\}$ 都成立（telescoping）。所以**客户端在哪一轮关联哪架 UAV、UAV 怎么飞、关联集怎么变，都不影响聚合结果的正确性**。这直接解决了 §5.C.2 的问题 ③④。
+
+**创新点 2 —— UAV 零私钥（俘获即无所得）**
+
+UAV $j$ 只持有：
+- 所有客户端的**公钥** $\{pk_i=(b_i,a)\}$（本就是公开的）
+- 公共参数 $(n,q,\Delta,Q,B)$
+- 5.B 的公开信标材料（$\boldsymbol\beta^r$ 的承诺、$G^r$）
+
+**UAV 不持有任何 $s_i$、不持有任何 Shamir 份额、不持有任何 ECC 私钥、不需要 TEE。**
+
+对比：P8 的边缘持 $y_i$（可算 $DS_i$）；P11 的边缘持 $sk_{A_i}$（可解 $[\cdot]_{A_i}$，且可回溯历史）。**MUFA-HFL 的 UAV 被俘获后，攻击者获得的信息量 = 一个旁观者从公开信道窃听获得的信息量 = 零额外信息**。这比"分片托管"（P8）和"边缘自持私钥"（P11）都强，且不需要任何硬件信任根。
+
+**创新点 3 —— 无需重加密代理的跨 UAV 密文接力**
+
+因为所有 UAV 用**同一组全局公钥** $\{pk_i\}$，且密文 $ct_{i,0}^r$ 只依赖 $(pk_i, v^r, m_i^r)$（与哪架 UAV 无关），所以：
+
+- 客户端 $i$ 在第 $r$ 轮关联 UAV $j$，上传 $ct_{i,0}^r$
+- 若 UAV $j$ 电量告急需撤离，它可把**已收到的密文原封不动转发**给邻近 UAV $j'$（或地面站），$j'$ 直接继续加法聚合
+- **无需任何 re-encryption、无需 proxy、无需密钥转换**（对比开放问题 8 中提到的"是否需要 re-encryption proxy"——本方案的答案是不需要）
+
+转发时附带签名 $\text{Sig}_j(i\|r\|ct_{i,0}^r)$ 以保留来源可追溯性；接收方按 5.B 的 V2 验证标签一致性。
+
+**创新点 4 —— 关联集的公开确定性判定（解决迁移与双重计数）**
+
+客户端迁移带来的真正风险不是"权重算错"（创新点 1 已解决），而是**双重计数**：若客户端 $i$ 同时被 UAV $j$ 与 $j'$ 覆盖并向两者都上传，则 $m_i^r$ 被计入两次。
+
+MUFA-FL 用公开确定性规则指定**唯一主关联**：
+$$j^*(i,r) = \arg\min_{j:\ \|u_j^r-v_i\|\le d_{\text{thr}}}\Big(\|u_j^r-v_i\|,\ j\Big)\qquad(\text{距离优先，ID 破平局})$$
+其中 $u_j^r$（UAV 位置）与 $v_i$（客户端位置）由 UAV 广播的签名轨迹通告给出。**所有实体都能独立算出同一个 $j^*(i,r)$**，因此：
+- 客户端只向 $j^*(i,r)$ 上传
+- 每架 UAV 与云都能独立验证"收到的密文是否来自应当关联自己的客户端"⇒ **双重计数可检测**
+- 迁移在轮边界生效（轮内关联固定），避免中途切换导致的部分聚合
+
+这是 P8/P11 都没有的机制（它们假设关联静态）。
+
+**创新点 5 —— 残差压缩与密文聚合的可组合性（回应开放问题：HE + 残差压缩）**
+
+§2.3 指出"P3 ResFed 的压缩是明文操作，无法搬到密文域"。**MUFA-HFL 证明：对 ResFed 的线性预测器，这个论断不成立——因为线性预测器是仿射算子，可在密文域同态复算。**
+
+**下行（始终启用，零成本）**：所有客户端收到**同一个**全局模型 $w^r$，因此它们持有**完全相同**的全局轨迹历史 $\{w^{r-1},w^{r-2},\dots\}$。云与每个客户端可独立复算同一个预测器：
+$$\hat w^r = f_{\text{predict}}(w^{r-1},w^{r-2},\dots)=\begin{cases}w^{r-1} & M=0\ (\text{stationary})\\ w^{r-1}+\sum_{\tau=1}^{M}(-1)^{M-\tau}(M-\tau+1)(w^{r-\tau}-\hat w^{r-\tau}) & M>0\ (\text{linear})\end{cases}$$
+（形式取自 P3 ResFed Eq.8）云只下传残差
+$$\delta_{\text{dl}}^r = w^r-\hat w^r$$
+经 Top-K 稀疏 + 1-bit 量化 + Huffman（P3 的压缩管线，全在明文域，因为下行本就是明文）。**关键：轨迹对称性使得下行残差压缩不需要任何秘密状态同步。** P3 报告下行可省 ~99%（Fashion-MNIST 17.73 Mb → 0.16 Mb）。
+
+**上行（可选，需 UAV 存一份历史密文）**：客户端上传残差密文
+$$ct(r_i^r),\qquad r_i^r = u_i^r-\tilde u_i^r$$
+UAV 需重构 $ct(u_i^r)$。对 ResFed 的线性预测器（$M=1$）：
+$$\tilde u_i^r = \hat w^r + (u_i^{r-1}-\hat w^{r-1})$$
+其中 $\hat w^r,\hat w^{r-1}$ 是**公开**的全局模型（明文），$u_i^{r-1}$ 是 UAV **已持有密文**的上一轮上传量。因此
+$$\boxed{\;ct(u_i^r) = ct(r_i^r) + ct(u_i^{r-1}) + \texttt{Encode}\big(\lfloor Q(\hat w^r-\hat w^{r-1})\rfloor\big)\;}$$
+**全部是密文加法 + 密文-明文加法 ⇒ 零乘法深度。** 这就是"HE 与残差压缩可组合"的精确条件：**预测器必须是仿射的**（ResFed 的 stationary 与 linear 预测器都满足；其 $M>1$ 的高阶线性组合同样满足，因为仍是历史值的线性组合）。
+
+**代价（诚实声明）**：UAV 需为每个关联客户端存 1 个历史密文（$N_u\times0.62$ MB）。对 $N_u=30$ 是 18.6 MB，Jetson Orin Nano 的内存可承受；对 $N_u=500$ 是 310 MB，**超出合理机载内存**。故上行残差适用于"每架 UAV 关联数十个客户端"的中小规模；大规模时只启用下行残差。P3 也指出轨迹存储开销与 $M\cdot V$ 成正比（作者承认的局限），MUFA-HFL 把这个开销放在 UAV 而非客户端，并给出了明确的适用规模界。
+
+**设计目标汇总**
+
+| 目标 | 达成 |
+|---|---|
+| 精确无偏加权（修复 P8/P11 的缺陷） | ✅ 定理 5.C.2，与划分解耦 |
+| UAV 零私钥 | ✅ 俘获即无所得 |
+| 客户端迁移 / UAV 撤离 | ✅ 密文接力，无重加密代理 |
+| 双重计数可检测 | ✅ 公开确定性关联规则 |
+| UAV 端算力 | ✅ 纯密文加法（Jetson 上 5.8 ms 量级）+ 明文 MAD |
+| UAV-云回传带宽 | ✅ 每 UAV 每轮 $O(1)$ 个密文（与关联客户端数**无关**）+ 残差压缩 |
+| 抗掉线 | ✅ 客户端与 UAV 双向，继承 5.A |
+| 可信机构 | ✅ 训练期无 |
+
+### 5.C.4 威胁模型
+
+| 实体 | 数量 | 信任假设 | 能力 | 后果 / 防护 |
+|---|---|---|---|---|
+| **云 / 地面站** | 1 | **恶意** | 篡改 $C^r$；谎报 $D_{S^r}$；谎报存活集；对不同 UAV 发不同视图；重放 | 5.B 的 V1–V3 由**客户端**验证（云无法同时骗过所有客户端）；$D_{S^r}$ 由公开的 $\{d_i\}$ 与 $S^r$ 决定，客户端可独立复算 ⇒ **谎报 $D_{S^r}$ 等价于谎报 $S^r$，被 V1 捕获** |
+| **UAV $j$** | $L$ | **恶意（可被俘获）** | 丢弃/篡改/伪造部分聚合 $A_j^r$；伪造关联集；转发时替换密文；与云或其他 UAV 合谋 | **零私钥 ⇒ 无法解密任何东西**（这是与 P8/P11 的本质区别）；$A_j^r$ 由 UAV 签名，客户端用 V3 的加性标签验证 $\mathcal T(A_j^r)\stackrel{?}{=}\sum_{i\in U_j\cap S^r}\mathcal T(ct_{i,0}^r)$ ⇒ **篡改/丢弃/伪造均被检测**；关联集由公开规则 $j^*(i,r)$ 决定 ⇒ 伪造被 V1 类检查捕获 |
+| **客户端** | $N$ | 半诚实 + 部分拜占庭（$\beta<0.5$），可与 UAV/云合谋 | 上传有毒更新；伪造指纹；双重上传；拒绝参与 | 5.B 的 CLDP 指纹 + MAD 排除 + 客户端侧裁剪；双重上传由 $j^*(i,r)$ 检测；掉线由 5.A 处理 |
+| **合谋：云 + $\le L-1$ 架 UAV** | — | — | 汇总所有 UAV 视图 | 仍无法解密（无一方持私钥，部分解密只在客户端侧发生）；篡改仍被诚实客户端的 V1–V3 检测 |
+| **合谋：云 + $\kappa\le N-2$ 个客户端** | — | — | 共享份额 $\{s_{i,j}\}$ | 5.A 定理 5.A.3：$s_h$ 仍隐藏 |
+| **信道** | 地空 + 星地，公共可窃听可注入 | — | — | 签名 + 每轮新鲜 $v^r$ |
+| **不假设** | **无 TEE（UAV 电量/TrustZone 可信性争议，§2.2 P8 分析）、无 KDC、无 TA、无常驻可信机构、无客户端间直连** | — | — | — |
+
+**关键差异**：P11 PPBR 假设"大多数边缘半诚实、少数拜占庭"，且边缘**必须诚实执行 trimmed k-means 与 SA**——若边缘拜占庭，"它可以在聚类阶段排除良性客户端，而 CLDP 和 PLHE 都无法验证边缘的聚类行为"（§2.4）。**MUFA-HFL 把 UAV 设为完全恶意**，靠"UAV 零私钥 + 加性标签 + 公开关联规则"把 UAV 的作恶空间压缩到"只能造成可检测的拒绝服务"。
+
+### 5.C.5 方案设计
+
+#### 实体与持有物
+
+| 实体 | 长期持有 | 每轮计算 | 每轮通信 |
+|---|---|---|---|
+| 客户端 $C_i$ | $s_i$；份额种子 $\sigma_{ij}$；$b_i$ 的 Shamir 份额；签名密钥；$d_i$；轨迹历史（下行预测用） | 训练 → 裁剪 → 指纹 → 预缩放编码 → 加密 → 复算 $S^r$/$j^*$ → 验证 → 部分解密 → 解码更新 | 上：$ct_{i,0}^r,\phi_i^r,\mathcal T$，签名（~0.62 MB）<br>下：残差 $\delta_{\text{dl}}^r$（明文，~省 99%） |
+| **UAV $j$** | **仅公钥 $\{pk_i\}$、公参、签名密钥** | 收密文 → 验签 → 验关联 → 密文加法 → 残差重构（可选） → 签名转发 | 上：$A_j^r$（**1 个密文，0.62 MB，与 $|U_j|$ 无关**）+ $\mathcal T(A_j^r)$<br>下：接收云的存活集与告警 |
+| 云 / 地面站 | 所有 $pk_i$、$pk_i^{sig}$、公参 | 收 $A_j^r$ → 密文加法 → 广播 $C^r$ 与标签 → 收 $D_j$ → 广播 $M^r$ | 与 UAV 双向 $O(L)$ 个密文 |
+
+#### 一轮完整协议（10 步闭环）
+
+**Step 0 —— 信标与轨迹通告**
+
+云广播轮次 $r$ 与上一轮全局模型 $w^{r-1}$（或残差 $\delta_{\text{dl}}^{r-1}$）。每架 UAV $j$ 广播签名的位置通告 $(j,r,u_j^r,\text{Sig}_j)$。全体本地计算
+$$v^r=\texttt{PRPG}(r,B),\quad G^r,\quad \boldsymbol\beta^r\ (\text{分布式，见 5.B 实现备注}),\quad j^*(i,r)\ \forall i$$
+
+**Step 1 —— 客户端：本地训练 + 裁剪 + 指纹**
+
+$$\Delta_i^r = w_i^{r,\text{local}}-w^{r-1},\qquad \bar\Delta_i^r=\Delta_i^r\cdot\min\Big(1,\tfrac{B_{\text{clip}}}{\|\Delta_i^r\|_2}\Big)$$
+$$\phi_i^r=\texttt{CLDP}\big(\text{sign-ratio}_{G^r}(\bar\Delta_i^r)\,\|\,\|\bar\Delta_i^r\|_2\,\|\,\cos(\bar\Delta_i^r,w^{r-1})\,\|\,\dots\big)$$
+
+**Step 2 —— 客户端：全局整数预缩放 + 加密**
+
+$$m_i^r=\texttt{Encode}\big(\lfloor Q\cdot d_i\cdot\bar\Delta_i^r\rceil\big),\qquad ct_{i,0}^r=v^rb_i+m_i^r+e_{i,0}^r$$
+
+> **注意与 5.A/5.B 的唯一区别**：预缩放因子从 $\alpha_i=d_i/D$（有理数，且 $D$ 依赖存活集）换成 $d_i$（**公开整数，与存活集无关**）。归一化被推迟到 Step 9 的明文域。**这一个改动同时解决了"循环依赖"（$\alpha_i$ 需要 $S^r$，而 $S^r$ 需要上传）与"划分依赖"（$D_j$ 未知）。**
+
+**Step 3 —— 客户端 → 主关联 UAV**
+
+$$C_i\to \text{UAV}_{j^*(i,r)}:\quad \big(i,r,ct_{i,0}^r,\phi_i^r,\mathcal T(ct_{i,0}^r),\mathcal T(m_i^r),\text{Sig}_{sk_i^{sig}}(\cdot)\big)$$
+（若启用上行残差，则 $ct_{i,0}^r$ 换成 $ct(r_i^r)$，UAV 按创新点 5 重构）
+
+**Step 4 —— UAV：验签、验关联、部分聚合**
+
+UAV $j$ 对每条上传：① 验签；② 验 $j^*(i,r)=j$（否则拒绝并告警，**防双重计数**）；③ 累加
+$$A_j^r = \sum_{i\in U_j\cap A_1}ct_{i,0}^r,\qquad \mathcal T(A_j^r)=\sum_{i\in U_j\cap A_1}\mathcal T(ct_{i,0}^r)\bmod p$$
+若启用上行残差，先重构 $ct(u_i^r)=ct(r_i^r)+ct(u_i^{r-1})+\texttt{Encode}(\lfloor Q(\hat w^r-\hat w^{r-1})\rfloor)$ 再累加。
+
+**UAV 计算量**：$|U_j\cap A_1|$ 次密文加法 + 同等次数的环加法（标签）。§4.1(c)：Jetson AGX Orin 上 $n=8192$ 的同态加为 5.8 ms；$|U_j|=30$ 时约 174 ms。**在 §4.1(b) 的 126–170 W 悬停下约 22–30 J**，可接受。对比 P11 边层 SA 的 14.67–62.24 s（1.9–10.6 kJ）——**低两个数量级**。
+
+**Step 5 —— UAV → 云**
+
+$$\text{UAV}_j\to\text{Cloud}:\quad \big(j,r,A_j^r,\mathcal T(A_j^r),U_j\cap A_1,\{\phi_i^r\}_{i\in U_j\cap A_1},\text{Sig}_j(\cdot)\big)$$
+
+> **回传带宽**：每 UAV **1 个密文（0.62 MB）+ $|U_j|$ 个指纹（各 ~100 B）**，与 $|U_j|$ **几乎无关**（指纹是低维公开量）。$L=4$ 架 UAV 时总回传 ~2.5 MB。对比 P11 的 36.4–133.2 MB/轮 —— **降 15–53×**。
+
+**Step 6 —— 云：全局聚合 + 广播验证材料**
+
+$$C^r=\sum_{j=1}^L A_j^r,\qquad \mathcal T(C^r)=\sum_j\mathcal T(A_j^r)\bmod p,\qquad A_1=\bigcup_j(U_j\cap A_1)$$
+$$S^r=\textbf{RobustSelect}(\{\phi_i^r\}_{i\in A_1},\beta,\kappa_{\text{mad}}),\qquad D_{S^r}=\sum_{i\in S^r}d_i\ (\text{公开})$$
+云广播 $(r,S^r,D_{S^r},C^r,\mathcal T(C^r))$。**同时必须重算被排除客户端的影响**：由于 Step 2 的预缩放用的是 $d_i$ 而非 $\alpha_i$，排除集变化**只需改分母 $D_{S^r}$，不需要改任何密文** ⇒
+$$C^{r,(S^r)} = \sum_{i\in S^r}ct_{i,0}^r = C^r-\sum_{i\in A_1\setminus S^r}ct_{i,0}^r$$
+云广播剔除项（或客户端自行从 $A_1$ 与 $S^r$ 的差集本地扣除——因为所有 $ct_{i,0}^r$ 在 Step 5 的 $U_j\cap A_1$ 与签名中已可追溯）。
+
+**Step 7 —— 客户端：验证（V1–V4 + 新增 V5）**
+
+$$\text{(V1)}\ S^r\stackrel{?}{=}\textbf{RobustSelect}(\{\phi_i^r\}_{i\in A_1},\beta,\kappa_{\text{mad}})\qquad \text{(V2)}\ \mathcal T(A_j^r)\stackrel{?}{=}\!\!\sum_{i\in U_j\cap A_1}\!\!\mathcal T(ct_{i,0}^r)\ \forall j$$
+$$\text{(V3)}\ \mathcal T(C^{r,(S^r)})\stackrel{?}{=}\big\langle C^{r,(S^r)},\boldsymbol\beta^r\big\rangle\qquad \text{(V4)}\ \text{指纹-密文签名一致性}$$
+$$\text{(V5)}\ D_{S^r}\stackrel{?}{=}\sum_{i\in S^r}d_i\qquad(\text{防云谎报分母})$$
+
+任一失败 ⇒ 拒绝本轮、广播告警、回退 $w^{r-1}$。
+
+**Step 8 —— 部分解密（客户端侧，UAV 与云均不参与）**
+
+每个在线客户端 $C_j$ 计算（继承 5.A 步骤 4）
+$$D_j^{(S^r)}=v^ra\cdot\bar s_j^{(S^r)}+\text{masks}+e_j^*\pmod q,\qquad \bar s_j^{(S^r)}=\sum_{i\in S^r}s_{i,j}$$
+上传到云（**星形，无 P2P**）。云合并
+$$M^r = C^{r,(S^r)}_{0} + \sum_{j}D_j^{(S^r)}$$
+广播 $M^r$。
+
+> **注意**：这里的部分解密走的是"客户端→云"的单跳，**UAV 完全不经手任何密钥材料**。这与 P8（边缘算 $DS_i$ 上传给云端 TEE）形成鲜明对比——P8 的边缘必须持有 ECC 私钥份额才能算 $DS_i$。
+
+**Step 9 —— 客户端：明文域归一化 + 模型更新**
+
+$$\boxed{\;w^r = w^{r-1} + \frac{1}{Q\cdot D_{S^r}}\cdot\texttt{Decode}\big(M^r\big)\;}$$
+
+**Step 10 —— 下行残差压缩**
+
+云计算 $\delta_{\text{dl}}^r=w^r-\hat w^r$（$\hat w^r$ 由公开轨迹本地复算），Top-K + 1-bit 量化 + Huffman 后广播。客户端解压并加回 $\hat w^r$ 恢复 $w^r$。
+
+#### 闭环公式推导
+
+**定理 5.C.2（精确无偏性 + 划分无关性）**：设 $\{U_j\}_{j=1}^L$ 为 UAV-客户端关联的**任意**分划（即 $\bigcup_jU_j=\mathcal N$，$U_j\cap U_{j'}=\emptyset$），$S^r\subseteq A_1$ 为存活且通过鲁棒筛选的客户端集，所有部分解密完成。则
+$$w^r = w^{r-1} + \frac{\sum_{i\in S^r}d_i\bar\Delta_i^r}{\sum_{i\in S^r}d_i} + \varepsilon_{\text{round}}+\varepsilon_{\text{crypto}}$$
+其中 $\varepsilon_{\text{round}}$ 为定点取整误差（$\|\varepsilon_{\text{round}}\|_\infty\le\frac{N}{2Q}$），$\varepsilon_{\text{crypto}}$ 为 CKKS 解密噪声（$\|\varepsilon_{\text{crypto}}\|\le\frac{\|\text{噪声}\|_\infty}{\Delta Q}$）。**右端第一项分式与分划 $\{U_j\}$ 无关。**
+
+**证明**：
+$$\begin{aligned}
+C^{r,(S^r)} &= \sum_{i\in S^r}ct_{i,0}^r = \sum_{j=1}^L\ \sum_{i\in U_j\cap S^r}\!\!\big(v^rb_i+m_i^r+e_{i,0}^r\big) &&\text{（分划 ⇒ 双和可交换，telescoping）}\\
+M^r &= C^{r,(S^r)}+\sum_{\ell=1}^N D_\ell^{(S^r)} = \sum_{i\in S^r}m_i^r + v^r\!\!\sum_{i\in S^r}\!\!e_i+\sum_{i\in S^r}\!\!e_{i,0}^r+\sum_\ell e_\ell^* &&\text{（定理 5.A.1）}\\
+&= \texttt{Encode}\Big(\Big\lfloor Q\sum_{i\in S^r}d_i\bar\Delta_i^r\Big\rceil\Big)+\text{噪声} &&\text{（}m_i^r\text{ 的定义 + 编码线性性）}
+\end{aligned}$$
+取整误差 $\big\|Q\sum_id_i\bar\Delta_i^r-\sum_i\lfloor Qd_i\bar\Delta_i^r\rceil\big\|_\infty\le N/2$，故
+$$\texttt{Decode}(M^r)=Q\sum_{i\in S^r}d_i\bar\Delta_i^r+\varepsilon_{\text{round}}'+\varepsilon_{\text{noise}}$$
+代入 Step 9 即得。分划无关性由第二行的 telescoping 直接给出：$\sum_j\sum_{i\in U_j\cap S}=\sum_{i\in S}$ 对任意分划成立。$\blacksquare$
+
+**推论 5.C.3（对比 P8/P11）**：MUFA-HFL 的偏差为 **0**（仅剩 $O(N/Q)$ 的定点误差与 CKKS 噪声），而由定理 5.C.1，P8 SKHE 与 P11 PPBR 的偏差为 $O(c_v)\cdot\|g^{\text{FedAvg}}\|$。取 P3 式的量化标度（P6 FedPHE 用 $B=4096$ 打包、P9 用 $\log_2q=318$），$Q=2^{20}$、$N=200$ 时 $\|\varepsilon_{\text{round}}\|_\infty\le10^{-4}$，**比 UAV 场景的 $c_v\sim0.5$ 小 4 个数量级**。
+
+**定理 5.C.4（UAV 零知识）**：设 UAV $j$ 被完全俘获，攻击者获得其全部存储与运行状态。则攻击者对任何诚实客户端 $h$ 的 $m_h^r$ 的优势 $\le\text{negl}(\lambda)$。
+
+**证明**：UAV $j$ 的存储仅含 $\{pk_i=(b_i,a)\}$（公开）、公参、签名密钥、以及已收到的 $\{ct_{i,0}^r\}$ 与 $\{\phi_i^r\}$——**这些全部也在公开信道上**（Step 3 的上传可被任何窃听者截获）。故俘获 UAV 不增加攻击者的信息量。恢复 $m_h^r$ 需 $c_{h,0}^r+v^ras_h$，由 RLWE 困难性不可行（同 5.A 定理 5.A.3 第 2 步）。$\blacksquare$
+
+> **与 P11 的对比**：P11 的边缘 $A_i$ 持 $sk_{A_i}$，可解密 $[\cdot]_{A_i}$，俘获后**该边层历史所有轮次的聚合可被回溯推理**（§4.3）。MUFA-HFL 的前向安全性甚至不需要哈希链（那是 5.D 的需求），因为**根本没有秘密可泄露**。
+
+**定理 5.C.5（跨 UAV 接力的正确性）**：若 UAV $j$ 在 Step 4 之后、Step 5 之前失效，将已收密文集 $\{ct_{i,0}^r\}_{i\in U_j\cap A_1}$ 连同签名转发给 UAV $j'$，则 $j'$ 计算出的 $A_j^r$ 与原值**逐比特相同**。
+
+**证明**：$A_j^r=\sum_{i}ct_{i,0}^r$ 只依赖密文集合与环加法（交换律 + 结合律），不依赖 $j$ 的任何私有状态（$j$ 无私钥）。签名保证密文未被替换。$\blacksquare$
+
+**这就是"无需 re-encryption proxy"的形式化理由**（回应开放问题 8）。
+
+#### 开销核算
+
+| 项目 | P8 SKHE | P11 PPBR | **MUFA-HFL** |
+|---|---|---|---|
+| 层数 | 3 | 3 | 3 |
+| 边缘持私钥 | ✅ ECC Shamir 份额 $y_i$ | ✅ $sk_{A_i}$ | **❌ 零私钥** |
+| TEE | ✅ 云端 | ❌ | **❌** |
+| 可信机构（训练期） | TA（初始化）+ TEE（每轮） | 无 | **无** |
+| 云层聚合权重 | 均匀 $\frac1M$（**有偏**） | 均匀 $\frac1{l'}$（**有偏**） | **精确 $\frac{d_i}{D_{S^r}}$（无偏）** |
+| 边缘解密交互轮次 | 1（边缘发 $DS_i$ 给 TEE） | **4**（云↔边盲化+开方+回传+中位数） | **0** |
+| 边缘每轮计算 | CKKS 加权聚合 + $DS_i$ | trimmed k-means + SA（14.67–62.24 s） | 密文加法（~174 ms @ $|U_j|=30$） |
+| 边-云密文/轮 | $M$ 个 | $3l$ 个（$[2m'_i],[\|m'_i\|^2],[x_i]$） | **$L$ 个** |
+| 总密文通信/轮 | ~百 KB–MB 级 | **36.4–133.2 MB** | **~2.5 MB（$L=4$）** |
+| 客户端迁移 | ❌ 未处理 | ❌ 需重做 $O(n'^2)$ SA 协商 | ✅ **零成本** |
+| 双重计数检测 | ❌ | ❌ | ✅ |
+| 抗拜占庭 | ❌（future work） | ✅ | ✅（承 5.B） |
+| 可验证 | ⚠️ hash 仅防解密个体 | ❌ | ✅ V1–V5 |
+| 服务器模型 | 半诚实 | 半诚实 | **恶意** |
+
+#### 局限（诚实声明）
+
+1. **上行残差受 UAV 内存约束**：每关联客户端 1 个历史密文（0.62 MB），$|U_j|\le50$ 为宜；更大规模只启用下行残差。
+2. **$d_i$ 必须公开**：样本数作为公开元数据是 FedAvg 的标准假设（P4/P8/P10 同样依赖），但它本身可能泄露信息（如"某医院只有 3 例罕见病样本"）。若要隐藏 $d_i$，需把 $d_i$ 也加密并用密文除法——那会引入乘法深度，与本报告零深度原则冲突。**这是一个明确的隐私-效率权衡，本报告选择公开 $d_i$。**
+3. **关联规则依赖位置通告的真实性**：$j^*(i,r)$ 用 UAV 广播的位置算出，恶意 UAV 可谎报位置以吸引更多客户端（进而丢弃它们的密文）。MUFA-HFL 的处置是"丢弃可被 V2 检测"，但不能防止 UAV 通过谎报位置造成的**关联不优**（能耗/时延层面）。完整的防谎报位置需要 UAV 间的相互测距或地面站定位，超出密码学范围。
+4. **$Q$ 的定点标度需与噪声预算联合标定**：由 §3.6，$D_{S^r}\cdot Q\cdot\|\bar\Delta\|_\infty+N\sigma^*<q/2$。$Q$ 越大取整误差越小但溢出风险越高。本报告未做数值标定。
+5. **不做实验验证**：本报告是设计文档，所有开销数字均由原文实测值 + §4.1 的硬件/链路参数**推算**得出，未在真实 UAV 平台上验证。
+
+---
+
+## 5.D EFS-HFL：前向安全、能量自适应的多 UAV 编队层次联邦学习
+
+**EFS-HFL = Energy-adaptive Forward-Secure HFL**
+**定位**：端-多 UAV 编队-云／在 5.C 之上叠加**前向安全**（哈希链轮密钥 + 零通信主动式份额刷新）与**能量自适应异构稀疏**（块级索引对齐 + 逐块公开归一化）／抗移动攻击者／模数链-能耗闭式联合优化
+
+### 5.D.1 场景
+
+在 5.C 的场景上加三个现实约束，这些约束使 5.C 不再充分：
+
+- **长周期任务**：森林火险监测、边境巡逻、跨季农田遥感——任务持续数月、数千轮。UAV 编队轮换部署，**同一架 UAV 可能被俘获后放回**（攻击者读取内存后归还，继续参与）
+- **移动攻击者（mobile adversary）**：攻击者在不同时间窗俘获**不同**的节点。经典结论（Herzberg 等 1995 的主动式秘密共享，**判断**：属密码学通识，本轮未单独检索确证）表明，静态秘密共享无法抵抗"分时段俘获不同份额持有者"，必须周期性刷新份额
+- **能量与链路高度异构**：编队中不同 UAV 电量不同（有的刚起飞、有的即将返航）；不同客户端信道条件不同（LoS vs NLoS，§4.1(a) 的概率模型）；**要求每个客户端按自己的能量/信道预算独立决定加密多少参数，且不需要与任何人协商**
+- **UAV 编队规模 $L=4\sim16$，客户端 $N=200\sim2000$**（比 5.C 更大，故上行残差不适用，见 5.C 局限 1）
+
+### 5.D.2 要解决的问题
+
+| 问题 | 5.C 的处置 | 为何在 5.D 场景下不足 |
+|---|---|---|
+| **① 前向安全（11 篇全缺，§1.4）** | UAV 零私钥 ⇒ UAV 侧无需前向安全 | **客户端侧仍有秘密**：$s_i$ 与份额种子 $\sigma_{ij}$ 是长期静态的。客户端 $i$ 在第 $r$ 轮被俘获 ⇒ 攻击者获得 $\sigma_{ij}\ \forall j$ ⇒ 可算出**所有历史轮次**的部分解密贡献 ⇒ **回溯解密全部历史聚合** |
+| **② 移动攻击者** | 无 | 攻击者在 $[r_1,r_2]$ 俘获客户端 $j$、在 $[r_3,r_4]$（$r_2<r_3$）俘获客户端 $k$。静态份额下，攻击者积累 $\{s_{i,j}\}$（窗口 1）与 $\{s_{i,k}\}$（窗口 2）。虽然单个窗口内不足以破解（需全部 $N$ 个份额），但**长期运行下若俘获过所有客户端（不同时刻），则全部份额泄露** |
+| **③ 能量/信道异构下的加密量决策** | 5.C 全体客户端用同一稀疏度（不稀疏） | §4.5 开放问题 5：需要按 $E_i^r,R_i^r$ 逐客户端决定。**P7 MASER 的做法（全局多数投票协商 mask）需要额外一轮通信，且强制所有人用同一稀疏度** —— 在异构能量下不可行 |
+| **④ 异构稀疏导致聚合有偏** | — | 若客户端 $i$ 只加密块集合 $B_i$，则块 $b$ 的聚合只包含 $\{i:b\in B_i\}$ 的贡献，**直接求和会系统性低估**（分母不一致） |
+| **⑤ 模数链长度与能耗的联合选择** | 5.C 用固定参数 | §4.5 开放问题 9：需要"模数链 $L$ ↔ 密文体积 ↔ 传输时间 ↔ 悬停能耗 ↔ 噪声预算"的闭式权衡 |
+
+### 5.D.3 创新点与设计目标
+
+**创新点 1 —— 零通信的主动式份额刷新（成对哈希链）**
+
+5.A/5.C 的份额种子 $\sigma_{ij}$ 是静态的。EFS-HFL 让它**逐轮单向演化**：
+$$\sigma_{ij}^{r+1}=H(\sigma_{ij}^{r}),\qquad s_{i,j}^{r}=\text{PRG}(\sigma_{ij}^{r}\|r)$$
+
+**性质**：
+- **前向安全**：由 $H$ 的单向性，知道 $\sigma_{ij}^{r}$ **无法**推出 $\sigma_{ij}^{r-1}$ ⇒ 第 $r$ 轮的俘获不泄露第 $r-1$ 轮及更早的份额 ⇒ **历史聚合不可回溯解密**
+- **零通信**：$\sigma_{ij}^r$ 由双方各自本地迭代 $H$ 得到，**不需要任何交换**（对比 P6 FedPHE 的密钥轮换需 KDC 每 $\tau$ 轮在线下发）
+- **零额外计算**：每对每轮 1 次哈希（$\lambda$ 比特输入），$N=2000$ 时每客户端 $N-1$ 次哈希 ≈ 毫秒级
+- **加性结构保持**：$\sum_j s_{i,j}^r = s_i$ 仍成立（因为符号约定 $s_{i,j}^r=\pm\text{PRG}(\sigma_{ij}^r\|r)$ 与 5.A 相同，只是 $\sigma$ 换成了 $\sigma^r$）
+
+> **与 5.A 的兼容性**：这是 5.A 的**即插即用增强**——只把 $\text{PRG}(\sigma_{ij})$ 换成 $\text{PRG}(H^r(\sigma_{ij}^0)\|r)$，协议其余部分逐字不变。
+
+**创新点 2 —— 抗移动攻击者的时间窗分析**
+
+设攻击者在时间窗 $W_1=[r_1,r_2]$ 俘获客户端集合 $C_1$，在 $W_2=[r_3,r_4]$（$r_2<r_3$）俘获 $C_2$，依此类推。
+
+**定理 5.D.1（移动攻击者下的隐私）**：若对每一轮 $r$，攻击者俘获过的客户端集合 $\mathcal C(r)\triangleq\{i:\exists k,\ i\in C_k\text{ 且 }r\in W_k\}$ 满足 $|\mathcal C(r)|\le N-2$，则对任意轮 $r$ 与任意诚实客户端 $h\notin\mathcal C(r)$，攻击者对 $m_h^r$ 的优势 $\le\text{negl}(\lambda)$。
+
+**证明思路**：攻击者在轮 $r$ 可用的关于 $s_h$ 的信息只有 $\{s_{h,j}^r\}_{j\in\mathcal C(r)}$（其他客户端在轮 $r$ 未被俘获，其 $\sigma_{hj}^r$ 由哈希链单向性不可从后续轮次的俘获中回推）。由 $|\mathcal C(r)|\le N-2$，$s_{h,h}^r$ 与至少一个未被俘获的 $s_{h,j}^r$ 对攻击者计算上均匀 ⇒ $s_h$ 隐藏 ⇒ 由 RLWE，$m_h^r$ 隐藏。$\blacksquare$
+
+**对比 5.C**：5.C 的静态份额下，$\mathcal C(r)$ 会随时间**单调累积**（一旦被俘获，$\sigma_{ij}$ 永久泄露 ⇒ 所有轮次的份额都泄露），故长期运行后 $|\mathcal C(r)|\to N$ 必然失守。**EFS-HFL 把 $\mathcal C(r)$ 限制为"当轮被俘获者"，使长周期任务的隐私不因时间累积而退化** —— 这是前向安全的实质价值。
+
+**创新点 3 —— 块级索引对齐的异构稀疏 + 逐块公开归一化（核心）**
+
+**这是本方案对开放问题 5 的完整回答，也是与 P7 MASER 的本质区别。**
+
+**块划分（公开、固定、无需协商）**：把模型参数向量按索引分成 $L_b$ 个**公开块** $\mathcal B_1,\dots,\mathcal B_{L_b}$（例如按层划分，或按固定步长 $|\mathcal B_\ell|=d/L_b$ 划分）。块索引集合是**全局公开常量**，所有客户端、UAV、云都知道。
+
+**客户端自主决策（零协商）**：客户端 $i$ 在第 $r$ 轮根据自己的能量预算 $E_i^r$ 与信道速率 $R_i^r$，本地算出可负担的密文数
+$$K_i^r = \max\Big\{K\in[0,L_b]:\ K\cdot\big(E_{\text{enc}}+E_{\text{tx}}(R_i^r)\big)\le \eta\cdot E_i^r\Big\}$$
+其中 $\eta\in(0,1)$ 为 FL 能耗占比上限，$E_{\text{enc}}$ 为单块加密能耗，$E_{\text{tx}}(R)=P_{\text{tx}}\cdot\text{size}/R$。然后按**块重要性**（本地 L2 范数降序，同 P7 的 magnitude-based pruning，但**不与他人协商**）选前 $K_i^r$ 个块，得块集合 $B_i^r\subseteq\{1,\dots,L_b\}$。
+
+**上传**：客户端只上传 $\{ct_{i,0}^{r,\ell}\}_{\ell\in B_i^r}$，**并明文标注块索引 $B_i^r$**（块索引不是隐私——P7 MASER 的全局 mask 同样是明文的，作者未将其视为泄露）。
+
+**UAV 逐块对齐聚合（纯加法）**：
+$$A_j^{r,\ell}=\sum_{i\in U_j\cap A_1:\ \ell\in B_i^r}ct_{i,0}^{r,\ell}\qquad \ell=1,\dots,L_b$$
+
+**逐块公开归一化（关键，解决偏差）**：定义块 $\ell$ 的**公开**参与样本数
+$$D^{r,\ell}\triangleq\sum_{i\in S^r:\ \ell\in B_i^r}d_i\qquad(\text{由公开的 }S^r,\{B_i^r\},\{d_i\}\text{ 可被任何实体独立算出})$$
+客户端解密块 $\ell$ 后：
+$$\boxed{\;w^r[\mathcal B_\ell] = w^{r-1}[\mathcal B_\ell]+\frac{1}{Q\cdot D^{r,\ell}}\cdot\texttt{Decode}\big(M^{r,\ell}\big)\;}$$
+
+**为什么这样无偏**：块 $\ell$ 的聚合精确等于"以 $\{i:\ell\in B_i^r\}\cap S^r$ 为参与集的 FedAvg"，分母 $D^{r,\ell}$ 正是该集合的样本数和。这与 5.C 的定理 5.C.2 是同构的证明，只是把单一集合换成逐块集合。
+
+> **对比 P7 MASER**：MASER 用**全局多数投票**协商一个统一的 mask $M^t$（$M^t(j,k)=1$ iff $\frac1m\sum_iM_i^t(j,k)\ge0.5$），这需要①额外一轮通信（每方上传 11.67 MB 的 mask，CIFAR-10）；②强制所有客户端用同一稀疏度（$\kappa=10\%$ 统一）；③未入选的参数被**所有人**置零，造成长期"参数死亡"。EFS-HFL 的块级方案①**零协商通信**（块索引公开）；②**异构稀疏度**（能量多的客户端加密更多块）；③**参数不会永久死亡**——块 $\ell$ 只要有一个客户端选了它就得到更新，且不同轮次不同客户端选不同块（因为 $K_i^r$ 随能量波动、重要性排序随训练变化），长期看所有块都被覆盖。
+
+**定理 5.D.2（异构稀疏的无偏性）**：设块 $\ell$ 的参与集 $S^{r,\ell}=\{i\in S^r:\ell\in B_i^r\}\ne\emptyset$，则
+$$w^r[\mathcal B_\ell]=w^{r-1}[\mathcal B_\ell]+\frac{\sum_{i\in S^{r,\ell}}d_i\bar\Delta_i^r[\mathcal B_\ell]}{\sum_{i\in S^{r,\ell}}d_i}+\varepsilon_{\text{round}}^{(\ell)}+\varepsilon_{\text{crypto}}^{(\ell)}$$
+即块 $\ell$ 的更新是**该块参与集上的精确 FedAvg**，与其他块的参与集无关。
+
+**证明**：与定理 5.C.2 逐字相同，把求和范围从 $S^r$ 换成 $S^{r,\ell}$、把 $D_{S^r}$ 换成 $D^{r,\ell}$。分划无关性同样由 telescoping 给出。$\blacksquare$
+
+**创新点 4 —— 能量-模数链-带宽的闭式联合优化（回应开放问题 9）**
+
+把 §3.6 的噪声预算与 §4.1 的物理模型联立，得到**闭式**参数选择规则。
+
+**记号**：模数链 $q=\prod_{\ell=0}^{L}q_\ell$，各 $q_\ell\approx2^{b}$（等长简化）⇒ $\log_2q=(L+1)b$。单密文体积
+$$\text{size}(L,n)=2n(L+1)b/8\ \text{字节}$$
+
+**噪声预算（§3.6，含 5.A 的 flooding）**：
+$$\underbrace{Q\cdot D_{S}\cdot\|\bar\Delta\|_\infty}_{\text{明文幅度}}+\underbrace{N\sigma^*}_{\text{flooding}}+\underbrace{N\sigma(1+\|s\|)}_{\text{加密噪声}}<\frac{q}{2}=2^{(L+1)b-1}$$
+取对数得**最小模数链长度**：
+$$\boxed{\;L_{\min}=\Big\lceil\frac{1}{b}\log_2\Big(2QD_S\|\bar\Delta\|_\infty+2N\sigma^*+2N\sigma(1+\|s\|)\Big)\Big\rceil-1\;}$$
+
+**UAV 侧能耗**（§4.1(b) 的悬停功率 $P_{\text{hov}}\approx126$–$170$ W）：
+$$E_{\text{UAV}}^{r}=\underbrace{P_{\text{hov}}\cdot t_{\text{agg}}}_{\text{聚合期悬停}}+\underbrace{P_{\text{rx}}\cdot t_{\text{rx}}}_{\text{接收期}}+\underbrace{P_{\text{tx}}\cdot t_{\text{tx}}}_{\text{回传期}}$$
+其中（$N_u$ 为该 UAV 关联客户端数，$R_{\text{ul}},R_{\text{bh}}$ 为上行/回传速率，$t_{\text{add}}$ 为单次密文加法耗时）：
+$$t_{\text{rx}}=\frac{N_u\cdot K^r\cdot\text{size}(L,n)}{R_{\text{ul}}},\qquad t_{\text{agg}}=N_u K^r L_b\, t_{\text{add}},\qquad t_{\text{tx}}=\frac{L_b\cdot\text{size}(L,n)}{R_{\text{bh}}}$$
+
+> **注意 $t_{\text{tx}}$ 与 $N_u$ 无关**（每 UAV 每块只回传 1 个密文），这是层次架构的带宽收益；而 $t_{\text{rx}}$ 与 $N_u$ 成正比，是 UAV 的主要能耗来源。
+
+**客户端侧能耗**（§4.1(a) 的 $P_{\text{tx}}$，$P_0=0.28$–$0.32$ W）：
+$$E_{\text{tx},i}^r=P_{\text{tx},i}\cdot\frac{K_i^r\cdot\text{size}(L,n)}{R_i^r},\qquad R_i^r=B_i\log_2\Big(1+\frac{P_i|h_i^r|^2}{B_i\sigma^2}\Big)$$
+
+**联合优化问题**：
+$$\min_{L,\ n,\ \{K_i^r\}}\quad \max_i\Big(\frac{E_{\text{tx},i}^r}{E_i^r}\Big)\quad \text{s.t.}\quad L\ge L_{\min},\quad E_{\text{UAV}}^r\le E_{\text{UAV}}^{\max},\quad \text{精度约束}\ \sum_\ell\frac{|S^{r,\ell}|}{|S^r|}\ge\rho_{\min}$$
+
+**闭式解的结构**（本报告给出的解析结论）：
+1. $L$ 取下界 $L_{\min}$（增大 $L$ 只增加体积与能耗，不增加安全性——安全性由 $n,\lambda$ 决定）
+2. 给定 $L$，$\text{size}(L,n)$ 随 $n$ 线性 ⇒ **$n$ 取满足 RLWE 安全级的最小值**（$n=2^{13}$ 对应 $\log q\approx218$ 可达 128-bit，P2 的 Set-I；若 $L_{\min}$ 要求 $\log q>218$ 则需 $n=2^{14}$，P2 Set-II）
+3. $K_i^r$ 由客户端本地闭式给出（创新点 3 的公式），**无需全局协调**
+4. 最后一个约束（覆盖率 $\rho_{\min}$）是唯一需要跨客户端信息的——但它可由**上一轮的公开统计**估计（$|S^{r-1,\ell}|$ 是公开的），故仍是本地决策
+
+> **这个闭式框架的实际价值**：它把"HE 参数怎么选"从工程试错变成了可计算的公式，且**把 UAV 能量预算直接接入了密码参数选择**——这是 §4.5 开放问题 9 所要求而现有 11 篇都没有的（P2 给参数表但不涉及能量；P11 给能耗实测但不做参数优化）。
+
+**创新点 5 —— 轮次绑定 MAC（密文新鲜度，回应开放问题 7）**
+
+用哈希链密钥派生轮次绑定的 MAC：
+$$\text{mac}_i^r=H\big(K_i^r\|\,r\,\|\,ct_{i,0}^r\big),\qquad K_i^r=H^r(K_i^0)$$
+$K_i^r$ 只有客户端 $i$ 与（通过 setup 期共享的）验证方可算。作用：
+- **防重放**：旧轮密文的 mac 与新轮的 $K^r$ 不匹配
+- **过期密文可检测**：UAV 收到 $r'<r$ 的密文直接拒绝（无需解密，回应开放问题 7 的"密文新鲜度"）
+- **前向安全**：$K_i^r$ 的哈希链使俘获不泄露历史 mac
+
+**设计目标汇总**
+
+| 目标 | 达成 |
+|---|---|
+| 前向安全（历史不可回溯） | ✅ 成对哈希链 + 轮密钥哈希链 |
+| 抗移动攻击者 | ✅ 定理 5.D.1 |
+| 份额刷新零通信 | ✅（对比 P6 需 KDC 在线） |
+| 异构能量下的加密量决策 | ✅ 块级自主 + 零协商 |
+| 异构稀疏的无偏聚合 | ✅ 定理 5.D.2，逐块公开归一化 |
+| 参数-能耗闭式权衡 | ✅ $L_{\min}$ 与联合优化框架 |
+| 防重放 / 密文新鲜度 | ✅ 轮次绑定 MAC |
+| 继承 5.C 的全部性质 | ✅ UAV 零私钥、精确无偏、迁移免疫、无重加密代理 |
+
+### 5.D.4 威胁模型
+
+在 5.C 的威胁模型上叠加：
+
+| 新增实体/能力 | 假设 | 防护 |
+|---|---|---|
+| **移动攻击者** | 在不同时间窗 $W_1,W_2,\dots$ 俘获不同客户端子集 $C_1,C_2,\dots$；俘获期间读取全部内存（含 $\sigma_{ij}^r$、$s_i$、当前轮份额）；可归还设备使其继续正常参与 | 定理 5.D.1：只要每轮 $\|\mathcal C(r)\|\le N-2$ 即安全。**关键**：$\sigma_{ij}^{r}$ 的哈希链单向性使窗口 $k$ 的俘获不泄露窗口 $k$ **之前**的份额 |
+| **长期运行** | 数千轮，任务持续数月 | 隐私不随时间累积退化（对比 5.C 静态份额） |
+| **能量耗尽 / 强制降级** | 客户端可能因电量不足无法加密任何块（$K_i^r=0$） | 该客户端本轮等价于掉线，由 5.A 的子集机制处理；若某块的 $S^{r,\ell}=\emptyset$，该块本轮不更新（保持 $w^{r-1}[\mathcal B_\ell]$），下一轮由其他客户端覆盖 |
+| **UAV 电量耗尽中途返航** | UAV 可能在 Step 4 后失效 | 5.C 定理 5.C.5 的密文接力 |
+| **重放攻击** | 攻击者（含恶意云/UAV）重放旧轮密文 | 轮次绑定 MAC |
+| **不假设** | 无 TEE、无 KDC、无 TA、无安全硬件（**哈希链的前向安全依赖"俘获时点"而非硬件隔离**——若攻击者能持续实时监控内存，则前向安全失效，此时需 TEE。这是诚实的边界） | — |
+
+### 5.D.5 方案设计
+
+#### 实体（在 5.C 基础上的增量）
+
+| 实体 | 新增长期状态 | 新增每轮计算 |
+|---|---|---|
+| 客户端 $C_i$ | $\sigma_{ij}^0$（成对种子初始值，setup 期 DH 协商）；$K_i^0$（轮密钥初始值）；能量计量 $E_i^r$；块重要性表 | $N-1$ 次哈希（$\sigma^{r}$ 演化）+ 1 次哈希（$K_i^r$）+ 块选择排序 $O(L_b\log L_b)$ + $K_i^r$ 次加密 |
+| UAV $j$ | 上一轮的 $ct(u_i^{r-1})$（仅当启用上行残差；5.D 默认**不启用**，见 5.C 局限 1） | $L_b$ 组密文加法（逐块）+ mac 校验 |
+| 云 | 公开的 $D^{r,\ell}$ 计算表 | $L_b$ 组密文加法 + 逐块广播 |
+
+#### 一轮协议（在 5.C 的 10 步上标注差异）
+
+**Step 0′ —— 密钥演化（零通信）**：每对 $(i,j)$ 与每客户端本地计算
+$$\sigma_{ij}^{r}=H(\sigma_{ij}^{r-1}),\qquad s_{i,j}^{r}=\text{PRG}(\sigma_{ij}^{r}\|r),\qquad K_i^{r}=H(K_i^{r-1})$$
+$$v^r=\texttt{PRPG}(r,B),\quad G^r,\quad \boldsymbol\beta^r,\quad j^*(i,r)\quad(\text{同 5.C})$$
+
+**Step 1′ —— 训练 + 裁剪 + 指纹 + 块重要性**：同 5.C Step 1，额外算每块重要性
+$$\text{imp}_i^{r,\ell}=\big\|\bar\Delta_i^r[\mathcal B_\ell]\big\|_2,\qquad \ell=1,\dots,L_b$$
+
+**Step 2′ —— 能量自适应块选择（零协商）**
+$$K_i^r=\max\Big\{K:\ K\cdot\big(E_{\text{enc}}+P_{\text{tx},i}\cdot\text{size}(L_{\min},n)/R_i^r\big)\le\eta E_i^r\Big\}$$
+$$B_i^r=\text{top-}K_i^r\ \text{blocks by}\ \text{imp}_i^{r,\ell}\ (\text{并列按 }\ell\text{ 升序 ⇒ 确定性})$$
+
+**Step 3′ —— 预缩放 + 逐块加密 + 上传**
+$$m_i^{r,\ell}=\texttt{Encode}\big(\lfloor Q d_i\bar\Delta_i^r[\mathcal B_\ell]\rceil\big),\qquad ct_{i,0}^{r,\ell}=v^rb_i^{(\ell)}+m_i^{r,\ell}+e_{i,0}^{r,\ell}\quad(\ell\in B_i^r)$$
+$$C_i\to\text{UAV}_{j^*(i,r)}:\ \big(i,r,B_i^r,\{ct_{i,0}^{r,\ell}\}_{\ell\in B_i^r},\phi_i^r,\{\mathcal T^{(\ell)}\},\text{mac}_i^r,\text{Sig}_i(\cdot)\big)$$
+
+> $b_i^{(\ell)}$ 的处理：为保持零深度与最小体积，**所有块共享同一个 $b_i$**（即 $b_i^{(\ell)}=b_i$），块之间只在明文分量 $m_i^{r,\ell}$ 上不同。这样 $\bar s_j^{(S^{r,\ell})}$ 逐块不同但 $v^rb_i$ 相同，部分解密需**逐块**计算 $D_j^{(S^{r,\ell})}=v^ra\cdot\bar s_j^{(S^{r,\ell})}+\dots$ —— 每块一次环乘。$L_b=16$ 时客户端每轮 16 次环乘，Jetson/终端级可承受。**这是异构稀疏的必然代价，本报告如实列出。**
+
+**Step 4′ —— UAV 逐块对齐聚合**
+$$A_j^{r,\ell}=\!\!\sum_{i\in U_j\cap A_1:\ \ell\in B_i^r}\!\!ct_{i,0}^{r,\ell},\qquad \mathcal T(A_j^{r,\ell})=\!\!\sum_{i\in U_j\cap A_1:\ \ell\in B_i^r}\!\!\mathcal T(ct_{i,0}^{r,\ell})\bmod p$$
+校验 $\text{mac}_i^r$（防重放/过期），校验 $j^*(i,r)=j$（防双重计数）。
+
+**Step 5′ —— UAV → 云**：$\big(j,r,\{A_j^{r,\ell}\}_{\ell=1}^{L_b},\{\mathcal T(A_j^{r,\ell})\},\{(U_j\cap A_1,B_i^r,\phi_i^r)\}_{i},\text{Sig}_j\big)$
+
+> **回传带宽**：$L_b$ 个密文/UAV/轮（**与 $|U_j|$ 无关**）。$L_b=16$、$L=4$、$n=2^{13}$、$L_{\min}=1$、$b=109$（$\log q=218$，P2 Set-I）时：$\text{size}=2\times8192\times2\times109/8\approx0.45$ MB ⇒ 总回传 $4\times16\times0.45\approx28.6$ MB。**仍比 P11 的 36.4–133.2 MB 低**，且与 $N=2000$ 无关。
+
+**Step 6′ —— 云：逐块全局聚合 + 公开分母**
+$$C^{r,\ell}=\sum_j A_j^{r,\ell},\qquad S^{r,\ell}=\{i\in S^r:\ell\in B_i^r\},\qquad D^{r,\ell}=\sum_{i\in S^{r,\ell}}d_i$$
+$$S^r=\textbf{RobustSelect}(\{\phi_i^r\}_{i\in A_1},\beta,\kappa_{\text{mad}})\quad(\text{同 5.B，一次筛选，逐块复用})$$
+广播 $(r,S^r,\{S^{r,\ell}\},\{D^{r,\ell}\},\{C^{r,\ell}\},\{\mathcal T^{(\ell)}\})$
+
+**Step 7′ —— 客户端验证 V1–V5 + 新增 V6**
+$$\text{(V6)}\quad D^{r,\ell}\stackrel{?}{=}\sum_{i\in S^{r,\ell}}d_i\quad\forall\ell,\qquad S^{r,\ell}\stackrel{?}{=}\{i\in S^r:\ell\in B_i^r\}\quad\forall\ell$$
+（$B_i^r$ 是客户端签名的公开数据 ⇒ 任何客户端可独立复算 ⇒ 云无法谎报分母或谎报块参与集）
+
+**Step 8′ —— 逐块部分解密**
+$$D_j^{(S^{r,\ell})}=v^ra\cdot\bar s_j^{(S^{r,\ell})}+\text{masks}^{(r)}+e_j^{*,(\ell)},\qquad \bar s_j^{(S^{r,\ell})}=\sum_{i\in S^{r,\ell}}s_{i,j}^{r}$$
+$$M^{r,\ell}=C_0^{r,\ell}+\sum_j D_j^{(S^{r,\ell})}$$
+
+**Step 9′ —— 逐块明文归一化**
+$$\boxed{\;w^r[\mathcal B_\ell]=w^{r-1}[\mathcal B_\ell]+\frac{1}{Q\,D^{r,\ell}}\texttt{Decode}\big(M^{r,\ell}\big),\qquad \ell:\ S^{r,\ell}\ne\emptyset\;}$$
+$$w^r[\mathcal B_\ell]=w^{r-1}[\mathcal B_\ell]\qquad(\text{若 }S^{r,\ell}=\emptyset)$$
+
+**Step 10′ —— 下行残差**：同 5.C Step 10（下行轨迹对称性不受块级稀疏影响，因为下行是完整模型）。
+
+#### 闭环公式推导
+
+**定理 5.D.3（前向安全）**：设攻击者在轮 $r$ 之后（含）俘获客户端 $i$，获得其当轮全部内存 $\{\sigma_{ij}^r\}_j,K_i^r,s_i$。则对任意 $r'<r$ 与任意诚实客户端 $h\ne i$，攻击者对 $m_h^{r'}$ 的优势 $\le\text{negl}(\lambda)$。
+
+**证明**：攻击者可算 $\sigma_{ij}^{r'+k}=H^{k}(\sigma_{ij}^{r'})$ 对 $k\ge0$（前向），但由 $H$ 的单向性（preimage resistance）无法从 $\sigma_{ij}^r$ 求 $\sigma_{ij}^{r-1}$。故轮 $r'$ 的份额 $s_{h,j}^{r'}=\text{PRG}(\sigma_{hj}^{r'}\|r')$ 对 $j\ne i$ 不可得。而 $s_{h,i}^{r'}$ 虽可由 $\sigma_{hi}^r$ 回推？**不能**——同样受单向性阻挡。故攻击者在轮 $r'$ 至多知 $s_{h,i}^{r'}$（若 $i$ 在 $r'$ 也被俘获，但这与"轮 $r$ 之后俘获"矛盾），其余份额计算上均匀 ⇒ $s_h$ 隐藏 ⇒ RLWE ⇒ $m_h^{r'}$ 隐藏。$\blacksquare$
+
+**定理 5.D.4（异构稀疏下的全局一致性）**：设各块的参与集 $\{S^{r,\ell}\}_\ell$ 互不相同，则第 $r$ 轮的全局更新满足
+$$w^r=w^{r-1}+\sum_{\ell=1}^{L_b}\frac{\sum_{i\in S^{r,\ell}}d_i\bar\Delta_i^r[\mathcal B_\ell]}{\sum_{i\in S^{r,\ell}}d_i}\cdot\mathbf 1[\mathcal B_\ell]+\sum_\ell\varepsilon^{(\ell)}$$
+即**每个块独立地执行了该块参与集上的精确 FedAvg**。特别地，若所有客户端能量充足（$K_i^r=L_b\ \forall i$），则 $S^{r,\ell}=S^r\ \forall\ell$，退化为 5.C 的定理 5.C.2（全局精确 FedAvg）。
+
+**证明**：逐块应用定理 5.D.2；退化情形由 $D^{r,\ell}=D_{S^r}$ 直接得出。$\blacksquare$
+
+> **这个"优雅退化"性质很重要**：EFS-HFL 在能量充足时**精确等于** MUFA-HFL，在能量受限时**逐块退化**为局部 FedAvg。它不是一个与 5.C 竞争的方案，而是 5.C 在异构能量下的**严格泛化**。
+
+**定理 5.D.5（覆盖率下界 ⇒ 收敛不受损的条件）**：若每轮每块至少有 $\rho_{\min}|S^r|$ 个客户端参与（$\rho_{\min}>0$），则
+$$\Big\|\frac{\sum_{i\in S^{r,\ell}}d_i\bar\Delta_i^r[\mathcal B_\ell]}{\sum_{i\in S^{r,\ell}}d_i}-\frac{\sum_{i\in S^r}d_i\bar\Delta_i^r[\mathcal B_\ell]}{D_{S^r}}\Big\|_2\le \frac{2}{\rho_{\min}}\cdot\max_i\|\bar\Delta_i^r[\mathcal B_\ell]\|_2\cdot\sqrt{\frac{\text{Var}_{S^{r,\ell}}(d,\Delta)}{|S^{r,\ell}|}}$$
+**判断**：这是标准的部分参与 FedAvg 偏差界的形式（与 FedAvg 的部分客户端采样分析同构），本报告的贡献是指出**块级异构稀疏等价于"逐块独立的部分参与"**，因此可直接套用现有的部分参与收敛结论（如 P3 ResFed 的 Theorem 2 给出的 $O(1/\sqrt T)$ 同阶保证，其证明只要求每轮的参与集是随机的且有下界）。**完整的块级异构稀疏收敛证明是本报告的后续工作，此处只给出偏差界的形式与适用条件，不声称已证明收敛。**
+
+#### 开销核算
+
+**参数选定示例**（$N=2000$，$L=8$ 架 UAV，$n=2^{13}$，$L_{\min}=1$，$\log_2q=218$，$\lambda=128$，$L_b=16$）：
+
+| 项目 | 计算 | 结果 |
+|---|---|---|
+| 单密文体块 | $2\times8192\times218/8$ | **0.45 MB** |
+| 客户端上行 | $K_i^r\times0.45$ MB，$K_i^r\in[1,16]$ | 0.45–7.2 MB（**异构**） |
+| UAV 回传 | $L_b\times0.45=16\times0.45$ | **7.2 MB/UAV** |
+| 总回传 | $8\times7.2$ | **57.6 MB**（与 $N=2000$ **无关**） |
+| 份额演化计算 | $(N-1)$ 次哈希 = 1999 次 | **~2 ms** |
+| 客户端逐块部分解密 | $L_b$ 次环乘 = 16 次 | Jetson 级 ~90 ms；终端级需核算 |
+| UAV 逐块加法 | $N_u\times L_b$ 次，$N_u=250$ | $250\times16\times5.8$ ms ≈ **23 s** ⚠️ |
+| UAV 悬停能耗（上项） | $23\text{ s}\times140$ W | **3.2 kJ** ⚠️ |
+
+> **诚实的负面结果**：$N_u=250$、$L_b=16$ 时 UAV 的逐块加法耗时 23 s、能耗 3.2 kJ，**这与 P11 边层 SA 的 14.67–62.24 s（1.9–10.6 kJ）处于同一量级，并未改善**。原因是块数 $L_b$ 把加法次数放大了 $L_b$ 倍。
+>
+> **缓解方案**（本报告给出三条，需在实现时取舍）：
+> 1. **降低 $L_b$**：$L_b=4$ 时耗时降至 5.8 s、能耗 0.8 kJ。代价是块粒度变粗、异构自适应能力下降
+> 2. **批处理**：把 $L_b$ 个块用 CKKS 的 SIMD 槽打包进一个密文（$n=8192$ 有 4096 个槽，P6 FedPHE 的 packing size $B=4096$），则每客户端只上传 1 个密文、UAV 只做 $N_u$ 次加法 ⇒ **23 s → 1.45 s，能耗 → 0.2 kJ**。代价：块内维度受 $n/L_b$ 限制，且所有客户端必须用同一块划分（异构稀疏退化为"块内置零"，但零值仍需传输 ⇒ 带宽收益消失）
+> 3. **UAV 只做转发不做聚合**（退化为两层）：违背 HFL 初衷，不采纳
+>
+> **判断**：方案 2（SIMD 打包 + 块内置零）在带宽不敏感、能量敏感的场景更优；方案 1（少块数）在带宽敏感场景更优。**这是一个真实的工程权衡，本报告不假装有唯一最优解。**
+
+**与已有方案对照**
+
+| 维度 | P6 FedPHE | P7 MASER | P11 PPBR | 5.C MUFA | **5.D EFS-HFL** |
+|---|---|---|---|---|---|
+| 前向安全 | ⚠️ KDC 周期换同一把 $sk$ | ❌ | ❌ | ⚠️ 仅 UAV 侧（客户端静态） | ✅ **哈希链，零通信** |
+| 抗移动攻击者 | ❌ | ❌ | ❌ | ❌ | ✅ 定理 5.D.1 |
+| 稀疏度 | 全局统一 $\zeta$（KDC 协调） | 全局统一 $\kappa$（多数投票协商） | ❌ | 不稀疏 | **逐客户端异构，零协商** |
+| 稀疏协商通信 | 需 KDC 下发 $\Delta_i$ | 每方 11.67 MB mask（CIFAR-10） | — | 0 | **0**（块索引公开） |
+| 稀疏导致偏差 | ⚠️ | ⚠️ 参数永久死亡 | — | — | ✅ **逐块公开归一化，精确无偏** |
+| 参数-能耗联合优化 | ❌ | ❌ | ❌（实测但无优化） | ❌ | ✅ **$L_{\min}$ 闭式 + 联合框架** |
+| 防重放 | ❌ | ❌ | ❌ | ⚠️ 轮次 $r$ 明文标注 | ✅ **轮次绑定 MAC** |
+| 层次 | 2 | 2 | 3 | 3 | 3 |
+
+#### 局限（诚实声明）
+
+1. **UAV 逐块加法的耗时/能耗未改善**（见上方"诚实的负面结果"）。需 SIMD 打包或降低 $L_b$ 缓解，各有代价。
+2. **前向安全依赖"俘获时点"假设**：若攻击者能**持续实时监控**客户端内存（如植入常驻恶意软件），哈希链无效，此时需 TEE。本报告明确不假设 TEE，因此这个边界必须写清楚。
+3. **块级异构稀疏的收敛性未证明**：定理 5.D.5 只给出偏差界的形式与"可套用现有部分参与结论"的论证方向，**完整收敛证明是后续工作**。
+4. **$L_b$ 与块划分方式需领域知识**：按层划分（CNN 的 conv/fc）比按固定步长划分更合理（同层参数重要性相近），但需要针对具体模型标定。本报告未做。
+5. **客户端逐块部分解密（$L_b$ 次环乘）对低端 IoT 终端可能过重**：$L_b=16$ 时 16 次环乘。缓解：让 UAV 转发聚合密文、客户端只对**自己参与的块**做部分解密（$K_i^r\le L_b$ 次）。
+6. **$Q$、$L_{\min}$、$\eta$、$\rho_{\min}$ 均未数值标定**。
+
+---
+
+## 6. 四方案横向对照与选型
+
+### 6.1 属性对照
+
+| 维度 | **5.A SAS-FL** | **5.B VRSA-FL** | **5.C MUFA-HFL** | **5.D EFS-HFL** |
+|---|---|---|---|---|
+| **架构** | 标准 FL（端-云） | 标准 FL（端-云/边缘） | **HFL（端-UAV-云）** | **HFL（端-多 UAV-云）** |
+| **密钥范式** | 多密钥（独立 $pk_i$）+ 阈值 | 同 5.A | 同 5.A | 同 5.A + 哈希链演化 |
+| **可信机构（训练期）** | **无** | **无** | **无** | **无** |
+| **TEE** | 无 | 无 | 无 | 无 |
+| **服务器模型** | **恶意** | **恶意** | **恶意** | **恶意** |
+| **UAV/边缘模型** | — | — | **恶意（可俘获）** | **恶意（可俘获）** |
+| **边缘持私钥** | — | — | **否（零私钥）** | **否（零私钥）** |
+| **抗拜占庭投毒** | ❌ | ✅（$\beta<0.5$） | ✅ | ✅ |
+| **可验证性** | 参与集基础 | ✅ V1–V4（全员复算） | ✅ V1–V5 | ✅ V1–V6 |
+| **抗掉线（上传阶段）** | ✅ 任意比例 | ✅ | ✅ | ✅ |
+| **抗掉线（解密阶段）** | ✅ $\ge t$ | ✅ $\ge t$ | ✅ $\ge t$ | ✅ $\ge t$ |
+| **上传/解密之间掉线** | ✅ **无污染** | ✅ | ✅ | ✅ |
+| **抗共谋** | 服务器 $+\kappa\le N-1$ | 同左 | 云 $+\le L-1$ UAV，或 $+\kappa$ 客户端 | 同 5.C |
+| **前向安全** | ❌ | ❌ | ⚠️ 仅 UAV 侧（本就无秘密） | ✅ **哈希链** |
+| **抗移动攻击者** | ❌ | ❌ | ❌ | ✅ 定理 5.D.1 |
+| **密文域加权** | ✅ 客户端预缩放 | ✅ | ✅ **精确无偏** | ✅ **逐块精确无偏** |
+| **加权是否无偏** | ✅ | ✅ | ✅ **定理 5.C.2** | ✅ **定理 5.D.4** |
+| **客户端迁移 / handover** | — | — | ✅ **零成本** | ✅ |
+| **跨 UAV 密文接力** | — | — | ✅ **无需重加密代理** | ✅ |
+| **异构稀疏（逐客户端）** | ❌ | ❌ | ❌ | ✅ **块级** |
+| **残差压缩** | ❌ | ❌ | ✅ 下行（+可选上行） | ✅ 下行 |
+| **乘法深度** | **0** | **0** | **0** | **0** |
+| **每轮 P2P 通信** | **0** | **0** | **0** | **0** |
+| **防重放** | ⚠️ 轮次明文标注 | ⚠️ | ⚠️ | ✅ **轮次绑定 MAC** |
+
+### 6.2 通信与计算对照（$N=20$，$n=2^{14}$，$\log_2q=318$，单 $R_q$ 元素 0.62 MB）
+
+| 项目 | P9 CDKS-LSS | P11 PPBR | **5.A SAS-FL** | **5.B VRSA-FL** | **5.C MUFA-HFL**（$L=4$） | **5.D EFS-HFL**（$L=8,L_b=16,n=2^{13}$） |
+|---|---|---|---|---|---|---|
+| 客户端上行/轮 | **109.305 MB** | SA 掩码 0.95 MB + PLHE | **1.24 MB** | **1.24 MB + 200 B** | **1.24 MB + 200 B** | $K_i^r\times0.45$ MB（0.45–7.2） |
+| 客户端 P2P/轮 | **98.895 MB** | $O(n'^2)$ 协商 | **0** | **0** | **0** | **0** |
+| 边缘/UAV 上行/轮 | — | 3 个 PLHE 密文 | — | — | **1 密文 = 0.62 MB** | $L_b$ 密文 = 7.2 MB |
+| 边-云总量/轮 | — | **36.4–133.2 MB** | — | — | **~2.5 MB** | **57.6 MB** |
+| 客户端下行/轮 | 0.437 MB | 明文 | 0.62 MB | 0.62 MB | **残差 ~省 99%** | **残差 ~省 99%** |
+| 边缘计算/轮 | — | trimmed k-means + SA **14.67–62.24 s** | — | — | 密文加法 **~174 ms** | 逐块加法 **~23 s** ⚠️（$L_b=4$ 时 5.8 s；SIMD 打包时 1.45 s） |
+| 服务器计算/轮 | Lagrange 插值 $t$ 次 | PLHE 盲化 + 中位数 + 交互解密（$l=6$ 时 <10 s） | $O(N)$ 环加法 | 同左 + MAD | $O(L)$ 环加法 | $O(LL_b)$ 环加法 |
+| 跨层交互轮次 | — | **4**（盲化→解密→开方→回传） | — | — | **0** | **0** |
+
+> ⚠️ 5.D 的 UAV 端耗时是**诚实的负面结果**：块级稀疏把加法次数放大了 $L_b$ 倍，与 P11 同量级。缓解方案与其代价见 5.D.5「开销核算」。
+
+### 6.3 与 11 篇原论文的"改进了什么"逐条对照
+
+| 新方案 | 相对哪篇改进 | 改进了什么（结构与逻辑层面） |
+|---|---|---|
+| **5.A SAS-FL** | P9 CDKS-LSS | ① 每轮 P2P 从 $O(N^2)$ 环元素降为 **0**（setup 期一次性 32 B 种子）；② 修掉 P9 原文未讨论的**上传/再共享之间的原子性缺口**（子集重选使 $c_0^{(S)}$ 与 $\bar s^{(S)}$ 严格同集）；③ 恢复 P9 算法中缺失的 **noise flooding**；④ 服务器模型从半诚实升到**恶意**（配 5.B） |
+| **5.A SAS-FL** | P5 ESAFL | ① 修掉 ESAFL 的"一人掉线即 $-a_ts_j$ 污染且不可检测"；② 消除"全员共持解密密钥 $s$"的泄露面（SAS-FL 无任何一方持有完整 $s$）；③ 去除 AS 信任根 |
+| **5.A SAS-FL** | P2 CDKS / xMK-CKKS | ① 堵住 CDKS 的 $c_{i,0}+\mu_i\approx m_i$ 个体泄露；② 解除 xMK-CKKS 聚合公钥的"全集硬编码 ⇒ 一人掉线即失败" |
+| **5.B VRSA-FL** | P10 DSVFL | **把验证者从"每轮必须在线的 TA"换成"任意一个诚实客户端"**：P10 的 $\varpi_e=\sigma_e^Z$ 只有持 $Z$ 的 TA 能算；VRSA-FL 的 V1–V3 输入全公开，人人可算 ⇒ 机构完全离线。同时补齐 P10 的 future work（抗拜占庭）与密文域加权（P10 的 Paillier 只支持加性） |
+| **5.B VRSA-FL** | P11 PPBR | ① **trimmed k-means（有随机初始化 ⇒ 不可复算）换成确定性 MAD ⇒ 可验证**；② **密文域范数盲化 + 边缘解密开方（4 次跨层交互 + 给边缘解密能力）换成客户端本地明文裁剪 + 公开 CLDP 指纹（0 次交互、0 私钥）**；③ 坐标子集 $G$ 从"云选定"改为"信标派生"，消除云操纵 $G$ 的能力；④ 服务器模型从半诚实升到恶意 |
+| **5.C MUFA-HFL** | P8 SKHE | ① **修掉云层均匀平均 $\frac1M$ 的加权偏差**（定理 5.C.1 给出偏差 $O(c_v)$，UAV 场景 $c_v\sim0.5$）；② **归一化推迟到明文域 ⇒ 彻底避免公式 (7) 的密文除法**（P8 原文未给出实现，本报告标注为存疑）；③ **去掉 TA + TEE**，UAV 零私钥（P8 的边缘持 $y_i$）；④ 补齐 P8 future work 承认缺失的恶意模型与拜占庭防御；⑤ 修掉 P8 hash 机制"只防解密个体、不验聚合正确"的残缺可验证性 |
+| **5.C MUFA-HFL** | P11 PPBR | ① **边缘零私钥**（P11 的 $sk_{A_i}$ 被俘获可回溯历史）；② **边-云密文从 36.4–133.2 MB 降到 ~2.5 MB**；③ **跨层交互从 4 次降到 0 次**，边缘计算从 14.67–62.24 s 降到 ~174 ms；④ **首次处理客户端迁移与双重计数**（P11 需重做 $O(n'^2)$ SA 协商）；⑤ 两级加权从均匀改为精确无偏 |
+| **5.D EFS-HFL** | 全部 11 篇 | **唯一具备前向安全**（§1.4 指出 11 篇全缺）：零通信哈希链份额刷新 + 抗移动攻击者（定理 5.D.1） |
+| **5.D EFS-HFL** | P7 MASER | ① **稀疏度从全局统一（多数投票协商，每方上传 11.67 MB mask）改为逐客户端异构（零协商，块索引公开）**；② **修掉"未入选参数被所有人置零 ⇒ 参数永久死亡"**：块级参与集逐轮变化，长期覆盖所有块；③ **逐块公开归一化 $D^{r,\ell}$ ⇒ 异构稀疏下仍精确无偏**（定理 5.D.2/5.D.4） |
+| **5.D EFS-HFL** | P6 FedPHE | ① **去掉 KDC 周期在线**（哈希链本地演化）；② 首次把 **HE 参数（模数链 $L_{\min}$）与 UAV 能耗/带宽闭式联立**（§4.5 开放问题 9） |
+| **5.C/5.D** | P3 ResFed | **证明"残差压缩不可搬到密文域"这一常识判断对仿射预测器不成立**：给出 $ct(u_i^r)=ct(r_i^r)+ct(u_i^{r-1})+\texttt{Encode}(\lfloor Q(\hat w^r-\hat w^{r-1})\rfloor\big)$ 的零深度重构式，实现 HE 与残差压缩的联合设计（P3 全文无加密讨论） |
+
+### 6.4 选型建议
+
+| 你的场景 | 推荐方案 | 理由 |
+|---|---|---|
+| 跨机构联盟（医院/银行），参与方数十个，云不可信，需要抗掉线且不想部署任何机构 | **5.A** | 通信最省（P2P 归零），子集可选聚合对掉线免疫，无需 TEE/TA |
+| 同上，但存在投毒风险（参与方中有竞争对手） | **5.B** | 在 5.A 上加 200 B/轮的指纹与标签即可，MAD 排除 + 全员验证 |
+| 单/少数 UAV 巡飞服务地面 IoT，关注 UAV 被俘获与客户端迁移 | **5.C** | UAV 零私钥（俘获即无所得），迁移零成本，且修掉了 P8/P11 的加权偏差 |
+| 长周期（数月/数千轮）多 UAV 编队，节点轮换部署，能量高度异构 | **5.D** | 唯一具备前向安全与抗移动攻击者；块级异构稀疏适配能量差异 |
+| 有 TEE 且规模小（<50 节点），追求实现简单 | P8 SKHE 仍可用 | 本报告方案的优势主要在"无 TEE + 大规模 + 恶意模型"，若已有 TEE 且规模小则 P8 的成熟度更高 |
+| 有每轮可达的 TA，只需加性聚合 | P10 DSVFL 仍可用 | P10 的 Ftop-k 误差反馈对收敛有独立价值（精度提升 49.14%），可与 5.B 组合 |
+
+### 6.5 四方案的可组合性
+
+四个方案不是互斥选项，而是**可叠加的层**：
+
+- **5.A 是密码内核**，5.B/5.C/5.D 都直接复用它的 Setup 与部分解密结构
+- **5.B 的验证层（V1–V4）可原样嫁接到 5.C/5.D**，事实上 5.C 的 V5、5.D 的 V6 就是这么扩展的
+- **5.C 的整数预缩放 + 明文域归一化可嫁接到 5.A**，使标准 FL 也获得精确无偏加权（5.A/5.B 用的是 $\alpha_i$，改为 $d_i$ 即可，代价是下行需多传 $D_{S^r}$——而它本就是公开的）
+- **5.D 的哈希链可嫁接到 5.A/5.B/5.C 的任意一个**，代价是每轮 $N-1$ 次哈希（毫秒级）
+- **5.D 的块级异构稀疏与 5.C 的上行残差互斥**（前者要求逐块独立密文，后者要求 UAV 存历史密文），需按规模二选一（见 5.C 局限 1）
+
+**最小可用组合**：5.A（内核）+ 5.B（验证与鲁棒）+ 5.C（层次与无偏）= 一个"无机构、恶意模型、抗拜占庭、可验证、精确无偏、UAV 零私钥"的完整 UAV-HFL 方案。5.D 是在此之上针对长周期与能量异构的增强。
+
+---
+
+## 7. 自评、局限与后续工作
+
+### 7.1 本报告做到了什么
+
+1. **逐篇通读 11 篇全文**，出处/卷期/DOI 按 PDF 首页核对（订正了本目录旧报告的 3 处标注错误，见附录 A）
+2. **把演进链拆到公式级别**：不是"CDKS → xMK-CKKS → CDKS-LSS → ESAFL"这样的名词罗列，而是给出每一步修补的**精确代数理由**（例如 $c_{i,0}+c_{i,1}s_i\approx m_i$ 为什么泄露、$\tilde b=\sum b_i$ 为什么把全集硬编码、$-as_i$ 与 $+as_i$ 在同一子集上为什么必须同集才能抵消）
+3. **发现并论证了 4 处原文未讨论的缺陷**：
+   - P9 CDKS-LSS 的**上传/再共享原子性缺口**（污染项 $v_jb_j$，且 CKKS 近似解密不报错 ⇒ 静默失败）
+   - P9 CDKS-LSS 的 Algorithm 1/2 中**缺失 noise flooding**（而 CDKS/xMK-CKKS 原版有 $e_i^*\leftarrow\phi$）
+   - P5 ESAFL 的"一人掉线 ⇒ $-a_ts_j$ 污染且不可检测"与"全员共持 $s$ ⇒ 任一失陷泄露全部历史聚合"（原文均未列为风险）
+   - P8/P11 两级聚合的**加权偏差 $O(c_v)$**（定理 5.C.1 给出闭式偏差表达式）
+4. **核实出 1 处存疑并如实标注**：P8 SKHE 公式 (7) 的密文除法缺乏实现细节，与其宣称的高效率存在张力（§5.C.2 补充发现，标注 ⚠️存疑）
+5. **4 个方案均给出闭环公式推导与定理**（5.A.1 子集精确性、5.A.3 隐私、5.B.1 鲁棒界、5.B.2 可验证性、5.C.1 偏差刻画、5.C.2 无偏性、5.C.4 UAV 零知识、5.C.5 接力正确性、5.D.1 移动攻击者、5.D.2 异构稀疏无偏、5.D.3 前向安全、5.D.4 全局一致性），每个定理都带证明或证明思路
+6. **每个方案都写明局限**，包括一个**诚实的负面结果**（5.D 的 UAV 逐块加法耗时与 P11 同量级，未改善）
+
+### 7.2 本报告没做到什么（必须明确）
+
+1. **未做任何实验**。所有开销数字都是"原文实测值 + §4.1 硬件/链路参数"的**推算**，未在真实平台运行。因此：
+   - 5.A 的"1.24 MB/轮"是单环元素推算，实际模型需多个环元素承载（报告已按 8 个环元素给出 9.92 MB 的换算）
+   - 5.C 的"~174 ms"是把 §4.1(c) 的 Jetson 5.8 ms/次加法线性外推，**未计入内存带宽、密文搬运、签名验证等实际开销**
+   - 5.D 的"$L_{\min}$ 闭式"未做数值标定
+2. **未做形式化安全证明**。定理 5.A.3 / 5.B.2 / 5.D.1 / 5.D.3 给的是**证明思路**而非完整的模拟器构造（simulation-based proof）。特别是 5.B 的 V3 依赖 Schwartz–Zippel，但"服务器能否预测 $\boldsymbol\beta^r$"这一点我在报告内就发现需要用 commit-reveal 修补（见 5.B 实现备注）——说明**完整的安全归约还需要仔细做**。
+3. **未证明块级异构稀疏的收敛性**。定理 5.D.5 只给出偏差界的形式与"可套用现有部分参与结论"的论证方向。
+4. **未验证 P8 公式 (7) 的实现**。标注为存疑并给出两种可能解释，但**没有查它的开源代码或补充材料**（P8 未提供代码链接）。
+5. **两份中文笔记的内容未被充分利用**。它们给出的 FedNova 归一化伪梯度 $d_k=\Delta_k/\tau_k$、$\tau_{\text{eff}}=\sum_kp_k\tau_k$ 是处理**本地步数异构**的标准手段，而本报告 4 个方案都假设各客户端本地步数相同。**在 UAV 场景下本地步数几乎必然异构**（算力差异），因此严格来说 5.C 的无偏性定理应扩展到 FedNova 形式。这是明确的遗漏。
+
+### 7.3 后续工作（按优先级）
+
+**高优先级（决定方案能否成立）**
+
+1. **对 5.A 做原型实现与实测**：重点验证 (a) noise flooding 的 $\sigma^*$ 在 $\log q=318$、$N=20$ 下是否还有足够预算承载 MNIST/CIFAR 规模的模型；(b) setup 期成对种子协商在 $N=64$ 时的实际耗时。本仓库已有 `threshold/`（DKG、sharing、ceremony、toy_ckks）与 `ckks_fed/crypto.py`，**可直接作为 5.A 的实现起点**
+2. **完成 5.B 的 commit-reveal 信标设计并给出完整安全归约**（当前只有思路）
+3. **扩展 5.C 的无偏性定理到 FedNova**（本地步数异构），这直接影响 UAV 场景的适用性
+
+**中优先级（提升完整性）**
+
+4. **5.D 的 SIMD 打包变体设计**：解决"UAV 逐块加法耗时未改善"的负面结果，需在"块内维度受 $n/L_b$ 限制"与"带宽收益消失"之间找到折中（例如按块分组打包，每组 4 块）
+5. **CLDP 参数在 $d'\approx12$ 下的标定**（5.B 局限 5）：按 P11 Theorem 2 的界重新选 $\varepsilon_\chi,L,L'$
+6. **成员变更协议**：5.A 的加入/退出重分片目前只有骨架（5.D 的主动式刷新可复用）
+
+**低优先级（拓展方向）**
+
+7. **AirComp 与 HE 的混合聚合**（§4.5 开放问题 6，本报告明确未回应）
+8. **异步密文聚合**：目前只有 5.D 的轮次绑定 MAC 可检测过期密文，尚无"在密文域处理过期梯度"的机制（开放问题 7）
+9. **把 P10 DSVFL 的 Ftop-k 误差反馈嫁接到 5.B/5.C**：Ftop-k 的误差补偿 $Y_i^{t+1}=\nabla\omega_i^t-\text{Ftop-k}(\nabla\omega_i^t)$ 与块级稀疏天然兼容，可能显著改善 5.D 的收敛
+10. **问责机制**：5.B 的"拒绝服务式惩罚"只能让篡改无收益，不能识别作恶者。若需问责需引入声誉链（§4.3 的区块链路线），代价是额外延迟
+
+### 7.4 一句话总结
+
+这 11 篇的技术演进，本质是围绕**"部分解密份额"**这一个环节反复修补：份额泄露个体（CDKS）→ 份额必须收齐（xMK-CKKS）→ 份额阈值化但每轮 $O(N^2)$ 且有原子性缺口（CDKS-LSS）→ 干脆取消份额（ESAFL）。**四条路没有一条同时做到"阈值化、免每轮 P2P、对中途掉线免疫、可验证"。** 本报告 5.A 用"公开信标随机数 + 按 $(i,j)$ 索引的加性预共享"给出了第五条路：**份额在 setup 期一次性拆分，训练期只上传 1 个环元素，且任何存活子集都能被事后精确聚合。** 在此内核上，5.B 把 P10 的集中式验证去中心化（验证者从每轮在线的 TA 变成任意诚实客户端），5.C 修掉 P8/P11 两级聚合的加权偏差并让 UAV 零私钥，5.D 补上 11 篇全缺的前向安全与能量自适应异构稀疏。
+
+---
+
+## 附录 A. 论文清单与出处核对
+
+下表出处均按 PDF 首页/DOI 逐条核对。**"订正"列指出本目录旧 `_reading_report.md` 的标注错误**。
+
+| # | 文件 | 完整标题 | 作者（首作者等） | 出处（核对后） | 旧报告标注 | 订正 |
+|---|---|---|---|---|---|---|
+| P1 | `17-SecAgg.pdf` | Practical Secure Aggregation for Privacy-Preserving Machine Learning | Bonawitz, Ivanov, Kreuter, Marcedone, McMahan, Patel, Ramage, Segal, Seth | CCS '17, ACM SIGSAC, DOI 10.1145/3133956.3133982 | 2017 ACM CCS | ✅ 一致 |
+| P2 | `19-CDKS.pdf` | Efficient Multi-Key Homomorphic Encryption with Packed Ciphertexts with Application to Oblivious Neural Network Inference | Hao Chen, Wei Dai, Miran Kim, Yongsoo Song | ACM CCS 2019 | 2019 ACM CCS | ✅ 一致 |
+| P3 | `24-ResFed.pdf` | ResFed: Communication Efficient Federated Learning with Deep Compressed Residuals | Rui Song, Liguo Zhou, Lingjuan Lyu, Andreas Festag, Alois Knoll | **IEEE Internet of Things Journal**, DOI 10.1109/JIOT.2023.3324079 | 2024 IEEE TWC | ❌ **订正：应为 IEEE IoT-J，非 TWC** |
+| P4 | `24-SecFed.pdf` | SecFed: A Secure and Efficient Federated Learning Based on Multi-Key Homomorphic Encryption | Yuxuan Cai, Wenxiu Ding, Yuxuan Xiao, Zheng Yan, Ximeng Liu, Zhiguo Wan | **IEEE TDSC, Vol. 21, No. 4, Jul/Aug 2024**, pp. 3817– | 2024 IEEE TIFS | ❌ **订正：应为 IEEE TDSC 21(4)，非 TIFS** |
+| P5 | `25-ESAFL.pdf` | ESAFL: Efficient Secure Additively Homomorphic Encryption for Cross-Silo Federated Learning | Jiahui Wu, Weizhe Zhang, Fucai Luo | **IEEE TDSC, Vol. 22, No. 4, Jul/Aug 2025**, DOI 10.1109/TDSC.2025.3541612 | 2025 IEEE TIFS | ❌ **订正：应为 IEEE TDSC 22(4)，非 TIFS** |
+| P6 | `25-FedPHE.pdf` | FedPHE: A Secure and Efficient Federated Learning via Packed Homomorphic Encryption | Yuqing Li, Nan Yan, Jing Chen, Xiong Wang, Jianan Hong, Kun He, Wei Wang, Bo Li | **IEEE TDSC, Vol. 22, No. 5, Sep/Oct 2025**, DOI 10.1109/TDSC.2025.3567301（会议版见 INFOCOM 2024） | 2025 IEEE TIFS | ❌ **订正：应为 IEEE TDSC 22(5)，非 TIFS** |
+| P7 | `25-MASER.pdf` | Efficient Privacy-Preserving Cross-Silo Federated Learning with Multi-Key Homomorphic Encryption | Abdullah Al Omar, Xin Yang, Euijin Choo, Omid Ardakanian（University of Alberta） | IEEE TDSC 2025（arXiv:2505.14797v1, 20 May 2025） | 2025 IEEE TDSC | ✅ 一致 |
+| P8 | `25-SKHE.pdf` | An Efficient Privacy-Enhanced Federated Learning With Single-Key Homomorphic Encryption | Yilong Liu, Hong Zhang, Miao Wang, Qiqi Xie, Liqiang Wang | **IEEE IoT-J, Vol. 12, No. 13, 1 July 2025**, pp. 23598–, DOI 10.1109/JIOT.2025.3553134 | 2025 IEEE IoT-J | ✅ 一致（原文无官方缩写，"SKHE"为自定） |
+| P9 | `26-CDKS-LSS.pdf` | Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption | Yuntao Wang, Fumiya Inoue, Yujie Gu, Xun Shen, Mingwu Zhang | **Information Sciences 753 (2026) 123619**, Elsevier | 2026 Inf. Sci. | ✅ 一致 |
+| P10 | `26-Ftopk.pdf` | Enhancing Federated Learning in Edge Computing With Secure Aggregation and Dynamic Verification | Mengqian Li, Youliang Tian, Junpeng Zhang, Jinbo Xiong, Xinhua Cui, Jianfeng Ma | **IEEE TMC, Vol. 25, No. 4, April 2026**, pp. 4618–（收稿 2025-04-11，录用 2025-10-16，刊出 2026-03-06） | 2026 IEEE TIFS | ❌ **订正：应为 IEEE TMC 25(4)，非 TIFS** |
+| P11 | `26-PPBR.pdf` | PPBR: Privacy-Preserving and Byzantine-Robust Edge-Assisted Hierarchical Federated Learning in Mobile Networks | Yuanyuan He, Jie Zhang, Peng Yang, Zhe Sun, Xuemin Shen | **IEEE TMC, Vol. 25, No. 2, February 2026**, pp. 1595– | 2026 IEEE TMC | ✅ 一致 |
+| — | `联邦学习基本架构.pdf` | （中文学习笔记，10 页） | — | — | — | 提供 FedSGD/FedAvg/FedProx/FedNova 与密文场景零深度加权路线 |
+| — | `联邦学习的加权方式.pdf` | （中文学习笔记，3 页） | — | — | — | 提供 7 类加权策略：样本量 / 均等 / 数据质量 / 贡献度 / 可信度 / 公平性 / 自适应 |
+
+**命名说明**：
+- 文件名 `26-Ftopk.pdf` 中的 "Ftopk" 是该论文的**梯度选择算法名**，论文整体方案名为 **DSVFL**，聚合协议名为 **SCSA**
+- P2 的 CDKS 与 MK-CKKS 指同一密码体制（P9 原文明确："MK-CKKS and CDKS refer to the same cryptographic scheme"）
+- **xMK-CKKS** 是 Ma 等基于 CDKS 的改进（聚合公钥），本目录无其 PDF，其构造由 P9 §3.2.1、P7、P8 的转述核实
+
+## 附录 B. 符号表
+
+| 符号 | 含义 | 首次出现 |
+|---|---|---|
+| $R=\mathbb Z[X]/(X^n+1)$ | 分圆多项式环，$n=2^k$ | §3.1 |
+| $R_q=\mathbb Z_q[X]/(X^n+1)$ | 系数模 $q$ 的环 | §3.1 |
+| $a$ | CRS 公开随机多项式 | §3.1 |
+| $s_i\leftarrow\chi^n$ | 客户端 $i$ 的私钥 | §3.2 |
+| $b_i=-as_i+e_i$ | 客户端 $i$ 的公钥分量，$pk_i=(b_i,a)$ | §3.2 |
+| $\tilde b=\sum_ib_i$ | **聚合公钥**（xMK-CKKS），对应 $s_{\text{add}}=\sum_is_i$ | §2.1 环节 2 |
+| $\Delta$ | CKKS 缩放因子 | §3.2 |
+| $Q$ | **全局定点标度**（整数权重用，MUFA-HFL/EFS-HFL 引入） | §5.C.3 |
+| $\chi,\psi,\phi$ | 密钥分布 / 加密噪声分布 / noise flooding 分布（$\text{Var}(\phi)\gg\text{Var}(\psi)$） | §3.1 |
+| $v^r$ | 第 $r$ 轮公开信标随机数，由 PRPG 本地重现 | §5.A.3 |
+| $B$ | PRPG 公共种子（setup 期分发） | §5.A.3 |
+| $m_i^r$ | 客户端 $i$ 第 $r$ 轮的编码明文 | §5.A.5 |
+| $ct_{i,0}^r=v^rb_i+m_i^r+e_{i,0}^r$ | 上传的密文分量（$c_{i,1}^r=v^ra$ 公开不传） | §5.A.5 |
+| $s_{i,j}^r$ | $s_i$ 的第 $j$ 份加性份额，$\sum_js_{i,j}^r=s_i$ | §5.A.3 |
+| $\sigma_{ij}^r=H^r(\sigma_{ij}^0)$ | 成对份额种子（哈希链演化） | §5.D.3 |
+| $\bar s_j^{(S)}=\sum_{i\in S}s_{i,j}$ | 客户端 $j$ 对子集 $S$ 的列和 | §5.A.3 |
+| $D_j^{(S)}$ | 客户端 $j$ 的部分解密贡献（含掩码与 flooding） | §5.A.5 |
+| $S^r$ / $S_1$ / $A_1$ / $A_2$ | 存活并入选的客户端集 / 上传集 / 第一阶段在线集 / 第二阶段在线集 | §5.A.5 |
+| $\alpha_i=d_i/D$ | FedAvg 权重 | §3 |
+| $d_i,\ D,\ D_{S^r},\ D^{r,\ell}$ | 客户端样本数 / 总样本数 / 存活集样本数和 / **块 $\ell$ 的参与集样本数和** | §5.C.3, §5.D.3 |
+| $\Delta_i^r,\ \bar\Delta_i^r$ | 本地增量 / 裁剪后增量 | §5.B.5 |
+| $\phi_i^r$ | 公开低维 CLDP 指纹（$d'\approx12$ 维） | §5.B.3 |
+| $G^r$ | 符号统计的坐标子集（信标派生，非服务器选定） | §5.B.3 |
+| $\boldsymbol\beta^r$ | 加性哈希标签的公开随机向量（commit-reveal 派生） | §5.B.3 |
+| $\mathcal T(x)=\langle x,\boldsymbol\beta^r\rangle\bmod p$ | **加性哈希标签**，$\mathcal T(x+y)=\mathcal T(x)+\mathcal T(y)$ | §5.B.3 |
+| $B_{\text{clip}}$ | 客户端侧裁剪阈值 | §5.B.3 |
+| $\beta$ | 拜占庭比例上限（$<0.5$） | §5.B.4 |
+| $t$ | Shamir / 掩码层阈值 | §5.A.5 |
+| $\alpha_1,\dots,\alpha_N$ | P9 的 Exceptional Sequence 公开评估点（本报告方案**不使用**） | §3.4 |
+| $L$ | UAV 数量（§5.C/5.D）／模数链长度 $L$（§3.2、§5.D.3）——**按上下文区分** | — |
+| $L_b$ | 模型参数块数 | §5.D.3 |
+| $B_i^r$ | 客户端 $i$ 第 $r$ 轮选择加密的块集合 | §5.D.3 |
+| $S^{r,\ell}=\{i\in S^r:\ell\in B_i^r\}$ | 块 $\ell$ 的参与集 | §5.D.3 |
+| $K_i^r$ | 客户端 $i$ 可负担的块数（能量自适应）／轮密钥 $K_i^r=H^r(K_i^0)$（§5.D.3 创新点 5）——**按上下文区分** | §5.D.3 |
+| $j^*(i,r)$ | 客户端 $i$ 在轮 $r$ 的唯一主关联 UAV | §5.C.3 |
+| $A_j^r,\ C^r,\ M^r$ | UAV $j$ 的部分聚合 / 云的全局聚合 / 解密后的明文聚合 | §5.C.5 |
+| $P_{\text{hov}},\ E_{\text{UAV}}^r,\ E_i^r$ | UAV 悬停功率 / UAV 每轮能耗 / 客户端能量预算 | §5.D.3 |
+| $L_{\min}$ | 满足噪声预算的最小模数链长度（闭式） | §5.D.3 |
+
+---
+
+*报告完。*
+
+*全部密码构造基于 RLWE 假设（与 P2/P5/P7/P9 同源）；全部文献出处已按 PDF 首页核对；全部开销数字为原文实测值与 §4.1 物理参数的推算结果，**未经实验验证**；全部定理给出证明或证明思路，**未做完整的模拟器安全归约**。局限与后续工作见 §7。*
