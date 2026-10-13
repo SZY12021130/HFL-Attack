@@ -66,6 +66,38 @@ model:
 
 
 # ============================================================================
+# 三·五、明文模式配置 (encryption)
+# ============================================================================
+# enabled=false：标准明文 FedAvg/鲁棒聚合路径——客户端上传明文更新，
+#   服务器用 defense.aggregation_rule 指定的 baseline/ 注册表规则聚合
+#   （不加密、无密文开销）。用于复现 SFLBR 对比表中的明文鲁棒聚合基线
+#   （Krum/Median/T-mean 等）。
+# enabled=true（默认）：现有 CKKS 密文聚合路径，行为完全不变。
+# ⚠️ 明文轮要求 ppbr.enabled=false 且 threshold.enabled=false，
+#    冲突时启动报错拒绝。
+encryption:
+  enabled: true
+
+
+# ============================================================================
+# 三·六、鲁棒防御配置 (defense) —— 仅明文聚合路径生效
+# ============================================================================
+# aggregation_rule 在明文模式（encryption.enabled=false）下从 baseline/
+# 注册表 (AGGREGATION_REGISTRY) 选择鲁棒聚合规则，可选名：
+#   fedavg / median / trimmed_mean / krum / multi_krum /
+#   geometric_median / centered_clipping / dnc / dp_brem / rflba
+# （加密模式下密文不可解密，该配置不生效，见 README 已知限制。）
+# anomaly_filter 为可选的异常检测预过滤：norm_clip / cosine_similarity /
+#   mad / multi_criteria（null=关闭）。
+# params 为规则超参数，覆盖注册表默认值（如 krum 的 f、trimmed_mean 的
+#   trim_ratio、dp_brem 的 phi/sigma；dp_brem 跨轮动量状态由服务器自动维护）。
+defense:
+  aggregation_rule: "fedavg"       # 明文模式下从 baseline/ 注册表选择（见上）
+  anomaly_filter: null             # 异常检测预过滤（null=关闭）
+  params: {}                       # 规则超参数（覆盖注册表默认值）
+
+
+# ============================================================================
 # 四、CKKS 同态加密配置 (ckks)
 # ============================================================================
 # 三个参数必须配套使用：

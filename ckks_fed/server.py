@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import time
 import logging
 from ckks_fed.defenses import aggregation_rules, anomaly_detection
+from baseline import AGGREGATION_REGISTRY
 from ckks_fed.log_utils import (
     LogTag, tag_info,
     log_aggregation_result, log_evaluation_result,
@@ -60,6 +61,9 @@ class AggregationServer:
         self.aggregation_rule = defense_cfg.get('aggregation_rule', 'fedavg')
         self.anomaly_filter = defense_cfg.get('anomaly_filter', None)
         self.defense_params = defense_cfg.get('params', {})
+        # 有状态聚合规则（如 baseline/dp_brem 的跨轮动量）的跨轮状态，
+        # 由 _apply_defense 按规则名注入对应规则的 aggregate(..., state=...)
+        self._rule_state: Dict[str, Dict] = {}
         
         tag_info(LogTag.SERVER, f"Initialized  |  rule={self.aggregation_rule}  |  filter={self.anomaly_filter}")
     
@@ -240,36 +244,22 @@ class AggregationServer:
                      f"original={len(client_updates)}  kept={len(filtered_updates)}  "
                      f"dropped={len(client_updates) - len(filtered_updates)}")
         
-        # 第二步：鲁棒聚合
-        if self.aggregation_rule == 'fedavg':
+        # 第二步：鲁棒聚合——从 baseline.AGGREGATION_REGISTRY 查规则
+        # （保留 fedavg/median/trimmed_mean/krum/multi_krum/geometric_median
+        #   等旧名字兼容；未知规则回退 fedavg 并告警）
+        spec = AGGREGATION_REGISTRY.get(self.aggregation_rule)
+        if spec is None:
+            logger.warning(f"未知聚合规则 {self.aggregation_rule}，回退到 FedAvg"
+                           f"（可选: {sorted(AGGREGATION_REGISTRY)}）")
             aggregated = aggregation_rules.fedavg_aggregate(filtered_updates, filtered_weights)
-        elif self.aggregation_rule == 'median':
-            aggregated = aggregation_rules.median_aggregate(filtered_updates)
-        elif self.aggregation_rule == 'trimmed_mean':
-            aggregated = aggregation_rules.trimmed_mean_aggregate(
-                filtered_updates,
-                trim_ratio=self.defense_params.get('trim_ratio', 0.1)
-            )
-        elif self.aggregation_rule == 'krum':
-            aggregated = aggregation_rules.krum_aggregate(
-                filtered_updates,
-                f=self.defense_params.get('f', max(0, len(filtered_updates) // 2 - 1))
-            )
-        elif self.aggregation_rule == 'multi_krum':
-            aggregated = aggregation_rules.multi_krum_aggregate(
-                filtered_updates,
-                f=self.defense_params.get('f', max(0, len(filtered_updates) // 2 - 1)),
-                m=self.defense_params.get('m', None)
-            )
-        elif self.aggregation_rule == 'geometric_median':
-            aggregated = aggregation_rules.geometric_median_aggregate(
-                filtered_updates,
-                max_iter=self.defense_params.get('gm_max_iter', 10)
-            )
         else:
-            logger.warning(f"未知聚合规则 {self.aggregation_rule}，回退到 FedAvg")
-            aggregated = aggregation_rules.fedavg_aggregate(filtered_updates, filtered_weights)
-        
+            params = dict(spec.default_params)
+            params.update(self.defense_params or {})
+            if spec.stateful:
+                # 有状态规则（如 dp_brem 跨轮动量）：服务器按规则名维护 state
+                params['state'] = self._rule_state.setdefault(self.aggregation_rule, {})
+            aggregated = spec.fn(filtered_updates, filtered_weights, **params)
+
         return aggregated, kept_indices
     
     def aggregate_plain_updates(self, client_updates: List[Dict[str, torch.Tensor]],

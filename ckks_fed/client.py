@@ -174,6 +174,7 @@ class FederatedClient:
     def local_train(self, global_params: Optional[Dict[str, torch.Tensor]] = None,
                     encrypted_global_params: Optional[Dict[str, List]] = None,
                     round_num: int = 0,
+                    upload_desc: Optional[str] = None,
                     ) -> Tuple[Dict[str, torch.Tensor], float, float]:
         start_time = time.time()
 
@@ -241,6 +242,9 @@ class FederatedClient:
         else:
             model_update = new_params
             mode_str = "完整权重"
+        # 明文轨道可覆盖"上传=..."打印描述（如 "plaintext"），复用现有打印设施
+        if upload_desc is not None:
+            mode_str = upload_desc
         
         # ---- 模型更新裁剪 (Update Clipping, QuanCrypt-FL 风格) ----
         update_clip_cfg = self.config.get('system', {}).get('update_clipping', {})

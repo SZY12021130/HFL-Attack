@@ -13,6 +13,7 @@
 - **统一攻击框架**（`hfl_attacks/`）：四类攻击注册到统一注册表，由主配置 `attack` 段一键开关，攻击发生在客户端本地明文域、加密上传之前。
 - **PPBR 可插拔拜占庭鲁棒**（`ppbr/`）：严格按 He 等 IEEE TMC 2026 实现完整协议——边层 CLDP 符号统计聚类过滤恶意客户端、云层两轮点积范数盲化 + 中位数筛选与裁剪恶意边缘、SA 成对掩码安全聚合、客户端动量；`ppbr.enabled: true` 自动开启云-边-端架构并**切换整条加解密路线为 PPBR 协议**（双轨架构，不走全局投票/TopK），与 attack 段组合即"攻击 × 防御"实验。详见 `doc/ppbr.md`。
 - **门限 CKKS 解密**（`threshold/`）：可插拔 t-out-of-n 门限解密，把"每个客户端持完整 sk"改造为"任意 ≥t 个参与方协作才能解密"。两种模式：`ttp`（可信 Dealer Shamir 分片完整私钥并销毁，doc §4）与 `dkg`（Pedersen 分布式密钥生成，无 TTP，doc §5）；组合器可选 `client`（场景 B，服务器盲，推荐）/ `server`（场景 A）。客户端加密上传、服务器密文聚合路径完全不变；`threshold.enabled: true` 仅作用于 CKKS 轨道（与 PPBR 互斥）。完整协议分析见 `doc/threshold_ckks.md`。
+- **明文鲁棒聚合基线**（`baseline/`）：SFLBR 论文对比表中的明文基线集合（FedAvg / Krum / Multi-Krum / Median / T-mean / GeoMed / CenteredClipping / DnC / DP-BREM / RFLBA），每个算法一个子包并统一接口注册到 `AGGREGATION_REGISTRY`。配合 `encryption.enabled: false`（明文模式）即"明文 FedAvg + 鲁棒防御"实验路径：跳过全部 CKKS 初始化，服务器按 `defense.aggregation_rule` 从注册表分派聚合规则。详见 `baseline/README.md`。
 
 > **已知限制**：密文域只能执行同态加权平均（FedAvg），median/krum/trimmed_mean 等
 > 需要明文坐标值的鲁棒聚合规则在纯密文服务器上无法执行——这是密钥分离架构的
@@ -59,6 +60,10 @@ HFL-Attack/
 │   ├── dkg.py                 # Pedersen DKG（承诺 + 份额验证 + 集体公钥）
 │   ├── toy_ckks.py            # 教科书 CKKS + 真·门限部分解密演示（numpy/CPU）
 │   └── ceremony.py            # ThresholdDecryptor: 仪式编排 + 通信开销统计
+├── baseline/                  # 明文鲁棒聚合基线 (SFLBR 对比表，AGGREGATION_REGISTRY 注册表)
+│   ├── fedavg/ krum/ median/ trimmed_mean/ multi_krum/ geometric_median/
+│   ├── centered_clipping/ dnc/ dp_brem/ rflba/   # 每个算法一个子包 (rule.py + README.md)
+│   └── README.md              # 总览表 + 明文模式使用示例
 ├── configs/
 │   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR + threshold)
 ├── scripts/                   # 辅助脚本
@@ -95,6 +100,14 @@ python main.py
 #     mode: "ttp"        # "ttp"=可信分发(doc §4) | "dkg"=分布式密钥生成(doc §5)
 #     t: 5                # 门限：任意 ≥t 个客户端协作才能解密
 #     combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
+python main.py
+
+# 明文鲁棒聚合基线（关加密 + 选 baseline/ 规则 + 可叠加攻击，见 baseline/README.md）
+#   encryption:
+#     enabled: false
+#   defense:
+#     aggregation_rule: "krum"   # fedavg/median/trimmed_mean/krum/multi_krum/
+#                                 # geometric_median/centered_clipping/dnc/dp_brem/rflba
 python main.py
 
 # 隐私推断类攻击的离线评估 (成员推断 AUC / 梯度重建 PSNR 等)
@@ -142,19 +155,25 @@ CKKSFedExperiment.__init__()
   │   ├─ create_client_dataloaders()   数据集加载 + IID/Dirichlet 划分
   │   ├─ create_model()                全局模型 (LeNet/MLP/CNN)
   │   ├─ CKKSManager                   KGC 生成完整上下文（含私钥）
+  │   │                                （明文模式 encryption.enabled=false 时
+  │   │                                  整体跳过，客户端/服务器 ckks_manager=None）
   │   ├─ server_ckks_manager           服务器：仅公钥上下文，不能解密
-  │   ├─ AggregationServer             密文全局状态初始化
+  │   ├─ AggregationServer             密文全局状态初始化（明文模式跳过）
   │   ├─ FederatedClient × N           每个客户端持完整上下文（可解密）
   │   ├─ HierarchyController（可选）   hierarchy.enabled=true 时创建边缘层
+  │   │                                （明文模式强制关闭：层次密文聚合不适用）
   │   ├─ PPBRProtocol（可选）          ppbr.enabled=true 时创建（自动开启
   │   │                                hierarchy），双轨架构切换到 PPBR 协议轨道
+  │   │                                （与明文模式互斥，冲突启动报错）
   │   ├─ 攻击注入（可选）              attack.enabled=true 时按 name 实例化攻击，
   │   │                                恶意客户端 = 编号最大的最后 malicious_count 个
   │   │                                • data:* → 替换恶意客户端 train_loader
   │   │                                • privacy:* → 只登记，训练中空操作
   │   └─ BandwidthSimulator            异构带宽采样（虚拟时钟用）
-  └─ run_experiment()                  双轨分发：ppbr.enabled ? run_round_ppbr
-                                       : run_round_encrypted()（逐轮执行）
+  └─ run_experiment()                  轨道分发：ppbr.enabled → run_round_ppbr；
+                                       否则 encryption.enabled=false →
+                                       run_round_plaintext；否则 run_round_encrypted
+                                       （threshold.enabled 时叠加门限解密）
 ```
 
 ### 单轮流程 A：CKKS 加密轨道（`run_round_encrypted`，默认）
@@ -203,6 +222,25 @@ CKKSFedExperiment.__init__()
 信任模型差异（云持 sk_A、边缘各自持私钥、客户端零密钥）与泄露分析详见
 `doc/ppbr.md`。两轨共享数据/模型/本地训练/攻击注入/分组/指标，"同一攻击 ×
 两轨"对比实验只改 `ppbr.enabled` 一个开关。
+
+### 单轮流程 C：明文轨道（`run_round_plaintext`，encryption.enabled=false）
+
+```
+1. 客户端选择     _select_clients()（同加密轨道）
+2. 明文中继       server.get_global_params() 明文下发（服务器可见全局模型）
+3. 本地训练       client.local_train()（不加密，upload_desc="plaintext"）
+4. 攻击注入（可选） 同加密轨道：明文域篡改更新（攻击在加密前生效，明文模式天然可用）
+5. 明文聚合       server.aggregate_plain_updates()：_apply_defense() 按
+                  defense.aggregation_rule 从 baseline.AGGREGATION_REGISTRY
+                  分派鲁棒规则（dp_brem 等有状态规则自动注入跨轮 state）
+6. 全局更新       server.update_global_model()（明文差值累加/全量替换）
+7. 明文评估       evaluate(server.model) → 指标入库
+                  （密文类指标 encryption_time/expansion_ratio 等记 0）
+```
+
+明文模式跳过全部 CKKS 初始化（客户端/服务器 ckks_manager 为 None），
+要求 `ppbr.enabled=false` 且 `threshold.enabled=false`（冲突启动报错）。
+规则清单与使用示例见 `baseline/README.md`。
 
 #### PPBR 一轮完整实体时序（云 / 边缘 / 客户端）
 
@@ -315,6 +353,8 @@ python -m pytest tests/test_attack_integration.py -v
 | `data` | 数据集名称、存储目录、类别数、IID/非IID 划分及 Dirichlet 参数 |
 | `model` | 模型结构（mlp/cnn/lenet 等）及超参数 |
 | `ckks` | CKKS 加密参数（多项式模次数、系数模链、缩放因子）、packing 策略、TopK/RandK 稀疏化、PTopk 残差补偿开关 |
+| `encryption` | 明文模式开关：`enabled: false` 走标准明文 FedAvg/鲁棒聚合路径（跳过 CKKS，要求 ppbr/threshold 关闭），`true`（默认）为 CKKS 密文路径 |
+| `defense` | 明文模式下的鲁棒聚合规则（`aggregation_rule` 从 `baseline/` 注册表选择）与异常检测预过滤（详见 baseline/README.md） |
 | `global_mask_vote` | 服务器端掩码聚合模式（none/union/threshold/topk）及阈值 |
 | `hierarchy` | 层次联邦开关：边缘节点数量、客户端-边缘关联策略（static/uav）、边缘采样率、UAV 移动模型 |
 | `attack` | 攻击总开关、攻击注册名、恶意客户端数量 |

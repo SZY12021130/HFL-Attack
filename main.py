@@ -218,6 +218,22 @@ class CKKSFedExperiment:
         """初始化实验组件"""
         section("Initialization", emoji="📦")
 
+        # 明文模式（encryption.enabled=false）：标准明文 FedAvg/鲁棒聚合轨道，
+        # 要求 ppbr/threshold 均关闭（ppbr/threshold 都是密文轨道，冲突拒绝启动）
+        self.plaintext_mode = not self.config.get('encryption', {}).get('enabled', True)
+        if self.plaintext_mode:
+            conflicts = []
+            if self.config.get('ppbr', {}).get('enabled', False):
+                conflicts.append("ppbr.enabled=true")
+            if self.config.get('threshold', {}).get('enabled', False):
+                conflicts.append("threshold.enabled=true")
+            if conflicts:
+                raise ValueError(
+                    "明文模式（encryption.enabled=false）与密文轨道冲突："
+                    + "、".join(conflicts)
+                    + "。请关闭后再试（ppbr/threshold 均为密文轨道，"
+                      "明文轮无法执行其加解密协议）。")
+
         self.client_loaders, self.test_loader = create_client_dataloaders(
             dataset_name=self.config['data']['dataset'],
             num_clients=self.config['system']['num_clients'],
@@ -242,39 +258,57 @@ class CKKSFedExperiment:
         # • 服务器：仅持有公钥上下文，只能加密/同态聚合，不能解密任何密文
         # 标记 PPBR 轨道：CKKS 管理器在 PPBR 模式下仅作组件占位（不上传/
         # 不稀疏化），跳过 PTopk 残差包装，打印按 PPBR 语义
-        _ckks_cfg = self.config['ckks'].copy()
-        _ckks_cfg['_ppbr_track'] = bool(
-            self.config.get('ppbr', {}).get('enabled', False))
-        self.ckks_manager = CKKSManager(_ckks_cfg)
-        from ckks_fed.crypto import CKKSContext
-        poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
-        server_context = CKKSContext.from_full_bytes(
-            self.ckks_manager.context.get_context_bytes(),
-            poly_modulus_degree=poly_degree)
-        self.server_ckks_manager = CKKSManager(_ckks_cfg.copy(), context=server_context)
-        ckks = self.config['ckks']
-        tree([
-            ("🔐", f"CKKS  N={ckks.get('poly_modulus_degree')}  |  "
-                   f"scale=2^{ckks.get('global_scale', 0).bit_length()-1}  |  "
-                   f"mod={ckks.get('coeff_mod_bit_sizes')}  |  "
-                   f"packing={'ON' if ckks.get('slot_packing', True) else 'OFF'}  |  "
-                   f"server_key=public-only"),
-        ], indent=1)
+        # 明文模式（encryption.enabled=false）：跳过全部 CKKS 初始化——
+        # 客户端/服务器 ckks_manager 置 None，明文轮不调用任何加密 API
+        if self.plaintext_mode:
+            self.ckks_manager = None
+            self.server_ckks_manager = None
+            tree([
+                ("🔓", f"Plaintext mode  |  rule={self.config.get('defense', {}).get('aggregation_rule', 'fedavg')}"
+                       f"（baseline/ 注册表）  |  CKKS skipped"),
+            ], indent=1)
+        else:
+            _ckks_cfg = self.config['ckks'].copy()
+            _ckks_cfg['_ppbr_track'] = bool(
+                self.config.get('ppbr', {}).get('enabled', False))
+            self.ckks_manager = CKKSManager(_ckks_cfg)
+            from ckks_fed.crypto import CKKSContext
+            poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
+            server_context = CKKSContext.from_full_bytes(
+                self.ckks_manager.context.get_context_bytes(),
+                poly_modulus_degree=poly_degree)
+            self.server_ckks_manager = CKKSManager(_ckks_cfg.copy(), context=server_context)
+            ckks = self.config['ckks']
+            tree([
+                ("🔐", f"CKKS  N={ckks.get('poly_modulus_degree')}  |  "
+                       f"scale=2^{ckks.get('global_scale', 0).bit_length()-1}  |  "
+                       f"mod={ckks.get('coeff_mod_bit_sizes')}  |  "
+                       f"packing={'ON' if ckks.get('slot_packing', True) else 'OFF'}  |  "
+                       f"server_key=public-only"),
+            ], indent=1)
 
         self.server = AggregationServer(self.global_model, self.config, self.device, self.server_ckks_manager)
-        self.server.init_encrypted_global_state(self.server_ckks_manager)
-        tree([
-            ("🖥️ ", f"Aggregation Server  |  rule={self.config.get('defense', {}).get('aggregation_rule', 'fedavg')}  |  encrypted_state=initialized"),
-        ], indent=1)
+        if not self.plaintext_mode:
+            self.server.init_encrypted_global_state(self.server_ckks_manager)
+            tree([
+                ("🖥️ ", f"Aggregation Server  |  rule={self.config.get('defense', {}).get('aggregation_rule', 'fedavg')}  |  encrypted_state=initialized"),
+            ], indent=1)
+        else:
+            tree([
+                ("🖥️ ", f"Aggregation Server  |  rule={self.config.get('defense', {}).get('aggregation_rule', 'fedavg')}  |  plaintext_state"),
+            ], indent=1)
 
         # 统一 CKKS 上下文：只反序列化一次，全体客户端共享
         # （原先每客户端各做一次 full-context 序列化+反序列化：240 客户端时
         #  初始化耗时 O(n)×单次加载且内存放大 ~n 倍，是长跑初始化瓶颈）
-        from ckks_fed.crypto import CKKSContext
-        poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
-        shared_context = CKKSContext.from_full_bytes(
-            self.ckks_manager.context.get_full_context_bytes(),
-            poly_modulus_degree=poly_degree)
+        if not self.plaintext_mode:
+            from ckks_fed.crypto import CKKSContext
+            poly_degree = self.config['ckks'].get('poly_modulus_degree', 8192)
+            shared_context = CKKSContext.from_full_bytes(
+                self.ckks_manager.context.get_full_context_bytes(),
+                poly_modulus_degree=poly_degree)
+        else:
+            shared_context = None
 
         self.clients = []
         for i in range(self.config['system']['num_clients']):
@@ -284,7 +318,8 @@ class CKKSFedExperiment:
                 train_loader=self.client_loaders[i],
                 config=self.config, device=self.device
             )
-            client.ckks_manager = CKKSManager(_ckks_cfg.copy(), context=shared_context)
+            if not self.plaintext_mode:
+                client.ckks_manager = CKKSManager(_ckks_cfg.copy(), context=shared_context)
             self.clients.append(client)
         tree([
             ("👤", f"Created {len(self.clients)} clients  |  "
@@ -351,7 +386,12 @@ class CKKSFedExperiment:
                 ], indent=1)
 
         # 层次联邦学习（云-边-端）：enabled 时创建边缘层
+        # 明文模式：层次密文聚合不适用于明文轮，强制关闭并告警
         self.hierarchy = None
+        if self.plaintext_mode and self.config.get('hierarchy', {}).get('enabled', False):
+            self.config['hierarchy']['enabled'] = False
+            tag_warn(LogTag.INIT,
+                     "plaintext mode → 强制关闭 hierarchy（层次密文聚合不适用于明文轮）")
         if self.config.get('hierarchy', {}).get('enabled', False):
             from ckks_fed.hierarchy import HierarchyController
             self.hierarchy = HierarchyController(
@@ -700,6 +740,126 @@ class CKKSFedExperiment:
             'simulated_round_duration': simulated_round_duration,
         }
 
+    def run_round_plaintext(self, round_num: int) -> Dict:
+        """
+        运行一轮明文联邦学习（encryption.enabled=false）
+
+        流程：服务器明文中继全局模型 → 客户端本地训练 → 攻击注入（明文域）→
+              客户端上传明文更新（不加密）→ 服务器 aggregate_plain_updates()
+              按 baseline/ 注册表规则做明文鲁棒聚合 → update_global_model()
+              → 明文评估。密文类指标（encryption_time/expansion_ratio 等）记 0。
+
+        Args:
+            round_num: 当前轮次
+
+        Returns:
+            本轮统计信息
+        """
+        log_round_header(round_num + 1, self.config['system']['num_rounds'],
+                         mode="Plaintext")
+        round_start = time.time()
+
+        selected_clients = self._select_clients()
+
+        # 服务器明文中继全局模型（明文模式：服务器可见全局模型）
+        global_params = self.server.get_global_params()
+        client_updates, client_weights, train_losses, train_accs = [], [], [], []
+        for client in selected_clients:
+            update, loss, acc = client.local_train(
+                global_params=global_params, round_num=round_num,
+                upload_desc="plaintext")
+            client_updates.append(update)
+            client_weights.append(client.get_weight())
+            train_losses.append(loss)
+            train_accs.append(acc)
+            self.metrics.record('local_train_time', client.local_train_time)
+
+        # 攻击注入（与加密轮同一语义：客户端本地明文域篡改更新；
+        # 攻击在加密上传前生效，明文模式下天然可用）
+        selected_clients, client_updates, client_weights, train_losses, train_accs = \
+            self._apply_attacks_to_updates(
+                round_num, selected_clients, client_updates,
+                client_weights, train_losses, train_accs)
+
+        # 客户端上传明文更新：通信量 = 明文大小，无密文开销
+        client_upload_sizes = []
+        for client, update in zip(selected_clients, client_updates):
+            plaintext_size = sum(p.numel() * 4 for p in update.values())
+            client_upload_sizes.append(plaintext_size)
+            self.metrics.record('plaintext_size', plaintext_size)
+            # 密文类指标对齐加密轮（记 0，report 据此识别明文轨道）
+            self.metrics.record('encryption_time', 0.0)
+            self.metrics.record('ciphertext_size', 0)
+            self.metrics.record('num_ciphertexts', 0)
+            self.client_participation[client.client_id] += 1
+        if selected_clients:
+            self.metrics.record('aggregated_ciphertexts', 0)
+            # 明文膨胀率 = 1.0（无密文开销）
+            self.metrics.record('expansion_ratio', 1.0)
+
+        # 明文鲁棒聚合（defense.aggregation_rule 从 baseline/ 注册表分派）
+        aggregated_update = self.server.aggregate_plain_updates(
+            client_updates, client_weights, client_upload_sizes)
+        self.server.update_global_model(aggregated_update)
+
+        # 明文评估（全局模型在服务器明文可见）
+        criterion = nn.CrossEntropyLoss()
+        test_loss, test_acc = evaluate(
+            self.server.model, self.test_loader, criterion, self.device)
+        self.server.record_evaluation(test_loss, test_acc)
+
+        self.metrics.record('train_loss', np.mean(train_losses))
+        self.metrics.record('train_acc', np.mean(train_accs))
+        self.metrics.record('test_loss', test_loss)
+        self.metrics.record('test_acc', test_acc)
+        self.metrics.record('aggregation_time', self.server.aggregation_time)
+        self.metrics.record('upload_cost', self.server.upload_cost)
+        self.metrics.record('download_cost', self.server.download_cost)
+        self.metrics.record('total_communication_cost', self.server.communication_cost)
+        self.metrics.record('communication_rounds', 1)
+        self.metrics.record('cpu_utilization', psutil.cpu_percent())
+        self.metrics.record('memory_usage', psutil.virtual_memory().percent)
+
+        round_time = time.time() - round_start
+        self.metrics.record('total_round_time', round_time)
+
+        # 模拟 wall-clock 时间：明文上传/下载按明文大小估计
+        simulated_download_time = 0.0
+        simulated_upload_time = 0.0
+        simulated_round_duration = 0.0
+        for idx, client in enumerate(selected_clients):
+            client_dl_bits = self.server.compute_download_cost() * 8
+            client_ul_bits = (client_upload_sizes[idx] if idx < len(client_upload_sizes)
+                              else 0) * 8
+            if self.bandwidth_simulator is not None:
+                client_dl = self.bandwidth_simulator.estimate_download_time(client.client_id, client_dl_bits)
+                client_ul = self.bandwidth_simulator.estimate_upload_time(client.client_id, client_ul_bits)
+            else:
+                dl_bw_bits = 1024 * 1000
+                ul_bw_bits = 512 * 1000
+                client_dl = client_dl_bits / dl_bw_bits if dl_bw_bits > 0 else 0.0
+                client_ul = client_ul_bits / ul_bw_bits if ul_bw_bits > 0 else 0.0
+            client_total = client.local_train_time + client_dl + client_ul
+            simulated_round_duration = max(simulated_round_duration, client_total)
+            simulated_download_time = max(simulated_download_time, client_dl)
+            simulated_upload_time = max(simulated_upload_time, client_ul)
+        self.metrics.record('total_round_time_simulated', simulated_round_duration)
+        self.metrics.record('upload_time', simulated_upload_time)
+        self.metrics.record('download_time', simulated_download_time)
+
+        tag_info(LogTag.ROUND,
+                 f"#{round_num + 1} done  |  acc={test_acc:.2f}%  |  "
+                 f"real_time={round_time:.2f}s  |  sim_dur={simulated_round_duration:.2f}s  |  "
+                 f"comm={fmt_size(self.server.communication_cost)}  |  mode=plaintext")
+
+        return {
+            'round': round_num + 1,
+            'test_acc': test_acc,
+            'test_loss': test_loss,
+            'round_time': round_time,
+            'simulated_round_duration': simulated_round_duration,
+        }
+
     def _apply_attacks_to_updates(self, round_num, selected_clients,
                                   client_updates, *other_lists):
         """
@@ -858,20 +1018,30 @@ class CKKSFedExperiment:
         upload_mode = "Δ" if self.config['system'].get('upload_difference', True) else "Full"
         if self.ppbr is not None:
             upload_mode = "PPBR 协议消息（[x]_A + SAz）"
+        elif self.plaintext_mode:
+            upload_mode = "plaintext（明文更新）"
         blank_line()
         banner("Experiment Start", width=72)
         kv("Mode", "PPBR" if self.ppbr is not None else
-           ("CKKS-Encrypted + Threshold" if self.threshold_cfg.enabled
-            else "Encrypted"), indent=1)
+           ("Plaintext FedAvg + 鲁棒防御" if self.plaintext_mode else
+            ("CKKS-Encrypted + Threshold" if self.threshold_cfg.enabled
+             else "Encrypted")), indent=1)
         kv("Rounds", self.config['system']['num_rounds'], indent=1)
         kv("Upload", upload_mode, indent=1)
+        if self.plaintext_mode:
+            kv("Aggregation rule",
+               self.config.get('defense', {}).get('aggregation_rule', 'fedavg')
+               + "（baseline/ 注册表）", indent=1)
         separator(width=72)
 
         num_rounds = self.config['system']['num_rounds']
         results = []
-        # 双轨分发：ppbr.enabled → PPBR 协议轨道；否则 CKKS 加密轨道
+        # 轨道分发：ppbr.enabled → PPBR 协议轨道；否则 encryption.enabled=false
+        # → 明文 FedAvg 轨道（要求 ppbr/threshold 关闭，已在初始化校验）；
+        # 否则 CKKS 加密轨道（threshold.enabled 时叠加门限解密）
         round_fn = (self.run_round_ppbr if self.ppbr is not None
-                    else self.run_round_encrypted)
+                    else (self.run_round_plaintext if self.plaintext_mode
+                          else self.run_round_encrypted))
 
         # 崩溃续跑：从检查点恢复全局模型/PPBR 动量/指标，跳过已完成轮次
         self._resume_round = 0
@@ -885,10 +1055,14 @@ class CKKSFedExperiment:
         key_dist_time = 0.0
         self.metrics.record('key_distribution_time', key_dist_time)
         num_clients = self.config['system']['num_clients']
-        if self.ppbr is None:
+        if self.ppbr is None and not self.plaintext_mode:
             key_size_per_client = self.ckks_manager.get_key_distribution_size()
             self.metrics.record('key_distribution_cost', key_size_per_client * num_clients)
             tag_info(LogTag.INIT, "Unified CKKS key distributed to all clients")
+        elif self.plaintext_mode:
+            # 明文轨道：无密钥分发环节
+            self.metrics.record('key_distribution_cost', 0.0)
+            tag_info(LogTag.INIT, "Plaintext mode: 无 CKKS 密钥分发")
         else:
             # PPBR 轨道：云公钥 pk_A 随 w_a 广播，边缘公钥注册到云，
             # SA 密钥每轮临时生成——无统一密钥分发环节
@@ -989,7 +1163,9 @@ class CKKSFedExperiment:
                     entries = []
 
         m = self.metrics.get_metrics()
-        is_encrypted = len(m.get('ciphertext_size', [])) > 0
+        # 明文轨道每轮记录 ciphertext_size=0（占位），不能仅凭列表非空判定加密
+        is_encrypted = (not getattr(self, 'plaintext_mode', False)
+                        and len(m.get('ciphertext_size', [])) > 0)
         if getattr(self, 'ppbr', None) is not None:
             mode = "ppbr"
         else:
@@ -1121,7 +1297,9 @@ class CKKSFedExperiment:
         """生成人类可读的Markdown实验报告（中英双语 + 详细数据）"""
         m = self.metrics.get_metrics()
         num_rounds = len(m.get('test_acc', []))
-        is_encrypted = len(m.get('ciphertext_size', [])) > 0
+        # 明文轨道每轮记录 ciphertext_size=0（占位），不能仅凭列表非空判定加密
+        is_encrypted = (not getattr(self, 'plaintext_mode', False)
+                        and len(m.get('ciphertext_size', [])) > 0)
         mode = "CKKS-Fed (Encrypted) / 加密模式" if is_encrypted else "FedAvg (Plaintext) / 明文模式"
 
         lines = []
@@ -1415,7 +1593,7 @@ def main():
         main_config['data']['num_classes'] = inferred_classes
 
     blank_line()
-    section("🚀 启动标准 CKKS-Fed 加密实验", emoji="")
+    section("🚀 启动 CKKS-Fed 实验（轨道由配置决定：加密 / 明文 / PPBR）", emoji="")
     experiment_enc = CKKSFedExperiment(
         args.config,
         output_dir=args.output_dir)
@@ -1430,7 +1608,7 @@ def main():
     kv("最终测试准确率", fmt_pct(enc_acc), indent=1)
     kv("结果目录", experiment_enc.output_dir, indent=1)
 
-    if enc_metrics.get('expansion_ratio'):
+    if enc_metrics.get('expansion_ratio') and not experiment_enc.plaintext_mode:
         blank_line()
         section("🔐 CKKS 加密指标汇总", emoji="")
         kv("密文膨胀率", f"{safe_mean(enc_metrics.get('expansion_ratio', [])):.2f}x", indent=1)
