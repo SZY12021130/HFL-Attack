@@ -16,6 +16,7 @@ global_params 本地训练 → 攻击注入 → update dict 展平/切块 → �
 → 加到 exp.server.model → 明文评估 → 记录标准指标 + athfhe_* 协议成本。
 """
 
+import math
 import time
 
 import numpy as np
@@ -33,6 +34,106 @@ from base.log_utils import (
 
 from athfhe.hier import HierATHFHE
 from athfhe.twin import TwinATHFHE
+
+# 逐流程通信键（每轮，cost dict / metrics 同名）
+TWIN_FLOW_KEYS = (
+    'athfhe_comm_p1_upload', 'athfhe_comm_p1_broadcast_c1',
+    'athfhe_comm_p2_mask', 'athfhe_comm_p2_seed',
+    'athfhe_comm_p3_list', 'athfhe_comm_p3_dk',
+)
+HIER_FLOW_KEYS = (
+    'athfhe_comm_p1_upload', 'athfhe_comm_p1_broadcast_c1',
+    'athfhe_comm_p2_ct', 'athfhe_comm_p2_ek',
+    'athfhe_comm_p3_dkshare', 'athfhe_comm_p3_bc',
+)
+
+# report.md 逐流程表行定义：(阶段, 发送方→接收方, 传输内容, 指标键)
+TWIN_FLOW_ROWS = (
+    ('阶段1 Outer-Upload', 'P_i → S_A', '外层 CKKS 密文 CT_i（2 多项式/块/客户端）',
+     'athfhe_comm_p1_upload'),
+    ('阶段1 Broadcast', 'S_A → 全体 P_i', '广播 c_1（按发送一次计）',
+     'athfhe_comm_p1_broadcast_c1'),
+    ('阶段2 OneShot', 'P_i → S_A', '掩码密文 (c\'_b, c\'_n)（2 多项式/块/客户端）',
+     'athfhe_comm_p2_mask'),
+    ('阶段2 OneShot', 'P_i → S_H', 'PRG 种子 (seed1, seed2)，TLS 记录 32B',
+     'athfhe_comm_p2_seed'),
+    ('阶段3 Coop', 'S_A → S_H', '在线名单 T（|T| 个 ID × 2B）',
+     'athfhe_comm_p3_list'),
+    ('阶段3 Coop', 'S_H → S_A', '联合解密密钥 dk（1 多项式/块）',
+     'athfhe_comm_p3_dk'),
+    ('阶段0 Setup（一次性）', 'S → 各 P_i', '(T,N)-Shamir 份额（每客户端 1 多项式）',
+     'athfhe_setup_bytes'),
+)
+HIER_FLOW_ROWS = (
+    ('阶段1 Outer-Agg', 'P_{c,i} → CH_c/CS', '外层 CKKS 密文（2 多项式/块/客户端）',
+     'athfhe_comm_p1_upload'),
+    ('阶段1 Broadcast', 'CS → 全体 P_i', '广播 c_1（按发送一次计）',
+     'athfhe_comm_p1_broadcast_c1'),
+    ('阶段2 Cluster-R1', 'P_{c,i} → CH_c', '内层双密文首项 (CTb, CTn)',
+     'athfhe_comm_p2_ct'),
+    ('阶段2 Cluster-R1', 'P_{c,i} → CH_c', 'ek1/ek2 簇内 Shamir 份额',
+     'athfhe_comm_p2_ek'),
+    ('阶段3 Cluster-R2', '节点 j → CH_c', 'dkShare_{c,j}（1 多项式/在线节点/块）',
+     'athfhe_comm_p3_dkshare'),
+    ('阶段3 Cluster-R2', 'CH_c → CS', '簇级份额 b\'_c（1 多项式/簇/块）',
+     'athfhe_comm_p3_bc'),
+    ('阶段0 Setup（一次性）', 'S → 各 P_{c,i}', '簇间加法份额 + 簇内 Shamir 份额',
+     'athfhe_setup_bytes'),
+)
+
+
+def _real_ckks_factor(exp, m) -> float:
+    """等效真实 CKKS 折算系数 = ceil(real_coeff_bits/8) / ceil(Q_bits/8)。
+
+    通信/浮点运算量与 M 无关，折算只动每系数字节数（Q 位宽 60→218 bit，
+    系数 ≈ 28/8 = 3.5）；real_coeff_bits=0 时返回 0（关闭折算）。"""
+    rcb = int(exp.athfhe_cfg.get('real_coeff_bits', 0))
+    if rcb <= 0:
+        return 0.0
+    q_bits_list = m.get('athfhe_Q_bits') or []
+    q_bits = q_bits_list[-1] if q_bits_list else 61
+    return math.ceil(rcb / 8) / math.ceil(q_bits / 8)
+
+
+def _athfhe_flow_report(exp, lines, m, kind: str) -> None:
+    """report.md 逐流程通信表（论文口径）：仿真量 / 等效真实 CKKS / @98Mbps"""
+    rows = TWIN_FLOW_ROWS if kind == 'twin' else HIER_FLOW_ROWS
+    factor = _real_ckks_factor(exp, m)
+    bw_bps = 98e6 / 8          # ATASSES 论文同口径：98 Mbps
+
+    def _fmt(n):
+        return f"{n:,.0f} B ({n / (1024 * 1024):.2f} MB)"
+
+    lines.append(f"### 3.1 AThFHE-{'Twin' if kind == 'twin' else 'Hier'} "
+                 f"Per-Flow Communication / 逐流程通信统计（论文口径）")
+    lines.append(f"")
+    lines.append(f"| 阶段 Phase | 发送方→接收方 | 传输内容 | "
+                 f"通信量(仿真) Simulated | 通信量(等效真实CKKS) Real-CKKS | "
+                 f"通信时间@98Mbps |")
+    lines.append(f"|---|---|---|---|---|---|")
+    total_sim = 0
+    for phase, path, content, key in rows:
+        sim = sum(m.get(key, []))
+        total_sim += sim
+        real = f"{_fmt(sim * factor)}" if factor > 0 else "-（折算关闭）"
+        t = sim / bw_bps
+        lines.append(f"| {phase} | {path} | {content} | {_fmt(sim)} | {real} "
+                     f"| {t:.2f} s |")
+    real_total = (f"{_fmt(total_sim * factor)}" if factor > 0
+                  else "-（折算关闭）")
+    lines.append(f"| **合计 Total** |  |  | **{_fmt(total_sim)}** | "
+                 f"**{real_total}** | **{total_sim / bw_bps:.2f} s** |")
+    lines.append(f"")
+    if factor > 0:
+        lines.append(f"> 折算系数 = ceil({int(exp.athfhe_cfg.get('real_coeff_bits'))}"
+                     f"/8) / ceil(Q_bits/8) ≈ **{factor:.2f}**"
+                     f"（仿真 Q≈2^{int(exp.athfhe_cfg.get('real_coeff_bits'))} 系数位宽"
+                     f" → 真实 CKKS 218-bit 系数；通信量与浮点运算数与 M 无关，"
+                     f"折算只动每系数字节数）。")
+    lines.append(f"> 口径：广播（c_1）按发送一次计；Setup 为一次性成本（仅首轮）；"
+                 f"仿真基于 numpy 大整数多项式记账（poly_bytes = n × "
+                 f"ceil(bitlen(q)/8)），≠ 真实 CKKS 实现通信。")
+    lines.append(f"")
 
 
 def _check_conflicts(config: dict, self_key: str, other_key: str) -> None:
@@ -113,12 +214,14 @@ def _run_athfhe_round(exp, round_num: int, proto, kind: str) -> dict:
     # 明文下发全局模型（同 PPBR 轨道：global_params 明文本地训练）
     global_params = get_model_params(exp.server.model)
     client_updates, train_losses, train_accs = [], [], []
+    local_train_times = []
     for client in selected_clients:
         update, loss, acc = client.local_train(
             global_params=global_params, round_num=round_num)
         client_updates.append(update)
         train_losses.append(loss)
         train_accs.append(acc)
+        local_train_times.append(getattr(client, 'local_train_time', 0.0))
         exp.metrics.record('local_train_time', client.local_train_time)
 
     # 攻击注入（与 CKKS/PPBR 轨道同一威胁模型：客户端本地、加密上传之前）
@@ -216,6 +319,50 @@ def _run_athfhe_round(exp, round_num: int, proto, kind: str) -> dict:
                        cost.get('athfhe_setup_bytes', 0) if round_num == 0 else 0)
     for k, v in cost.items():
         exp.metrics.record(k, v)
+
+    # ==== 论文口径指标：等效真实 CKKS 折算 + straggler 轮时 ==============
+    flow_keys = TWIN_FLOW_KEYS if kind == 'twin' else HIER_FLOW_KEYS
+    sim_comm = sum(cost.get(k, 0) for k in flow_keys)
+    rcb = int(exp.athfhe_cfg.get('real_coeff_bits', 0))
+    if rcb > 0:
+        # 折算系数 = ceil(rcb/8) / ceil(仿真Q_bits/8)；通信/浮点与 M 无关，
+        # 折算只动每系数字节数
+        factor = math.ceil(rcb / 8) / math.ceil(
+            cost.get('athfhe_Q_bits', 61) / 8)
+        exp.metrics.record('athfhe_comm_real_bytes', sim_comm * factor)
+        exp.metrics.record('athfhe_real_coeff_bits', rcb)
+
+    # straggler 轮时：crypto_time + max_选中客户端(local_train + dl + ul)。
+    # dl = 广播 c_1（全员同一份，按发送一次计）；ul 按在线客户端均摊上传
+    dl_bits = cost.get('athfhe_comm_p1_broadcast_c1', 0) * 8
+    ul_bits = (cost.get('athfhe_comm_p1_upload', 0)
+               + cost.get('athfhe_comm_p2_mask',
+                          cost.get('athfhe_comm_p2_ct', 0))
+               + cost.get('athfhe_comm_p2_seed', 0)) * 8 / max(num_online, 1)
+    crypto_time = cost.get('athfhe_crypto_time', 0.0)
+    simulated_download_time = 0.0
+    simulated_upload_time = 0.0
+    simulated_round_duration = 0.0
+    for idx, client in enumerate(selected_clients):
+        if exp.bandwidth_simulator is not None:
+            client_dl = exp.bandwidth_simulator.estimate_download_time(
+                client.client_id, dl_bits)
+            client_ul = exp.bandwidth_simulator.estimate_upload_time(
+                client.client_id, ul_bits)
+        else:
+            # fallback 固定带宽：下行 100 Mbps / 上行 50 Mbps
+            client_dl = dl_bits / 100e6
+            client_ul = ul_bits / 50e6
+        client_total = local_train_times[idx] + client_dl + client_ul
+        simulated_round_duration = max(simulated_round_duration, client_total)
+        simulated_download_time = max(simulated_download_time, client_dl)
+        simulated_upload_time = max(simulated_upload_time, client_ul)
+    total_round_time_simulated = crypto_time + simulated_round_duration
+    exp.metrics.record('total_round_time_simulated',
+                       total_round_time_simulated)
+    exp.metrics.record('upload_time', simulated_upload_time)
+    exp.metrics.record('download_time', simulated_download_time)
+
     for c in selected_clients:
         exp.client_participation[c.client_id] += 1
         exp.client_total_ciphertexts[c.client_id] += \
@@ -223,19 +370,18 @@ def _run_athfhe_round(exp, round_num: int, proto, kind: str) -> dict:
 
     round_time = time.time() - round_start
     exp.metrics.record('total_round_time', round_time)
-    exp.metrics.record('total_round_time_simulated', 0.0)
 
     tag_info(LogTag.ROUND,
              f"#{round_num + 1} done  |  acc={test_acc:.2f}%  |  "
-             f"real_time={round_time:.2f}s  |  mode=AThFHE-{kind}  |  "
-             f"online={num_online}/{len(selected_clients)}")
+             f"real_time={round_time:.2f}s  |  sim_dur={total_round_time_simulated:.2f}s  |  "
+             f"mode=AThFHE-{kind}  |  online={num_online}/{len(selected_clients)}")
 
     return {
         'round': round_num + 1,
         'test_acc': test_acc,
         'test_loss': test_loss,
         'round_time': round_time,
-        'simulated_round_duration': 0.0,
+        'simulated_round_duration': total_round_time_simulated,
     }
 
 
@@ -276,7 +422,10 @@ class HierAthfheTrack(Track):
             inner_noise_bits=int(cfg.get('inner_noise_bits', 20)),
             smudge_bits=int(cfg.get('smudge_bits', 10)),
             cluster_sizes=cluster_sizes,
-            seed=exp.config['system'].get('random_seed', 42))
+            seed=exp.config['system'].get('random_seed', 42),
+            parallel=bool(cfg.get('parallel', True)),
+            parallel_workers=int(cfg.get('parallel_workers', 0)),
+            parallel_progress=bool(cfg.get('parallel_progress', False)))
         p = exp.athfhe
         tree([
             ("🛡️", f"AThFHE-Hier: M={p.M}  |  Q={p.ctx_outer.q.bit_length()}bit"
@@ -307,6 +456,10 @@ class HierAthfheTrack(Track):
 
     def run_round(self, exp, round_num: int) -> dict:
         return _run_athfhe_round(exp, round_num, exp.athfhe, 'hier')
+
+    def report_stats_section(self, exp, lines, m, num_rounds, is_encrypted) -> None:
+        super().report_stats_section(exp, lines, m, num_rounds, is_encrypted)
+        _athfhe_flow_report(exp, lines, m, 'hier')
 
 
 class TwinAthfheTrack(Track):
@@ -340,7 +493,10 @@ class TwinAthfheTrack(Track):
             scale_bits=int(cfg.get('scale_bits', 40)),
             smudge_bits=int(cfg.get('smudge_bits', 10)),
             num_clients=num_clients,
-            seed=exp.config['system'].get('random_seed', 42))
+            seed=exp.config['system'].get('random_seed', 42),
+            parallel=bool(cfg.get('parallel', True)),
+            parallel_workers=int(cfg.get('parallel_workers', 0)),
+            parallel_progress=bool(cfg.get('parallel_progress', False)))
         p = exp.athfhe
         tree([
             ("🛡️", f"AThFHE-Twin: M={p.M}  |  Q={p.ctx.q.bit_length()}bit"
@@ -367,6 +523,10 @@ class TwinAthfheTrack(Track):
 
     def run_round(self, exp, round_num: int) -> dict:
         return _run_athfhe_round(exp, round_num, exp.athfhe, 'twin')
+
+    def report_stats_section(self, exp, lines, m, num_rounds, is_encrypted) -> None:
+        super().report_stats_section(exp, lines, m, num_rounds, is_encrypted)
+        _athfhe_flow_report(exp, lines, m, 'twin')
 
 
 register_track(HierAthfheTrack())

@@ -32,6 +32,8 @@ athfhe/hier.py：方案一——面向 CKKS 的分簇层次架构
 通信/计算成本按字节数与 wall-clock 时间累计进 cost dict（见 run_protocol）。
 """
 
+import multiprocessing as mp
+import os
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -41,6 +43,7 @@ from athfhe.ckks_toy import (
     RingContext, next_prime, outer_keygen, outer_encrypt, outer_add,
     shamir_share, lagrange_coeffs,
 )
+from athfhe.twin import block_rng, _PARALLEL_MIN_BLOCKS, _PARALLEL_MAX_WORKERS
 
 
 class HierATHFHE:
@@ -52,7 +55,8 @@ class HierATHFHE:
                  smudge_bits: int = 10,
                  cluster_sizes: Optional[Sequence[int]] = None,
                  q_prime_bits: Optional[int] = None,
-                 seed: int = 42):
+                 seed: int = 42, parallel: bool = True,
+                 parallel_workers: int = 0, parallel_progress: bool = False):
         """
         Args:
             num_clusters: C（簇数）
@@ -66,6 +70,10 @@ class HierATHFHE:
             q_prime_bits: 显式指定内层模数位宽（默认按论文界取最小素数；
                           显式给定时若违反 Q' > 2·n_c·Q²·B' 则 raise——测试用）
             seed: 随机种子
+            parallel: 块间多进程并行（每块随机流 block_rng(seed, blk)，
+                      并行结果与串行逐位一致）
+            parallel_workers: 并行进程数（0 = 自动）
+            parallel_progress: 并行时每 50 块打印进度（默认静默）
         """
         if num_clusters < 1:
             raise ValueError("簇数 C 必须 ≥ 1")
@@ -77,6 +85,11 @@ class HierATHFHE:
         self.B_prime = 1 << int(inner_noise_bits)
         self.rng = np.random.RandomState(seed)
         self.seed = seed
+        self.parallel = bool(parallel)
+        self.parallel_workers = int(parallel_workers)
+        self.parallel_progress = bool(parallel_progress)
+        self._pool = None          # 跨轮复用的进程池（惰性创建）
+        self._pool_workers = 0
 
         # 外层环：Q 取 > 2^outer_modulus_bits 的最小素数
         self.ctx_outer = RingContext(next_prime(1 << outer_modulus_bits), self.M)
@@ -128,6 +141,20 @@ class HierATHFHE:
 
         self.last_cluster_views: Dict[int, dict] = {}
 
+    def _close_pool(self) -> None:
+        """关闭跨轮复用的进程池（实验结束或 worker 数变化时调用）"""
+        if self._pool is not None:
+            self._pool.terminate()
+            self._pool.join()
+            self._pool = None
+            self._pool_workers = 0
+
+    def __del__(self):
+        try:
+            self._close_pool()
+        except Exception:
+            pass
+
     # ---- 成本统计 --------------------------------------------------------
     def _poly_bytes_outer(self) -> int:
         return self.ctx_outer.poly_bytes()
@@ -136,19 +163,23 @@ class HierATHFHE:
         return self.ctx_inner.poly_bytes()
 
     # ---- 阶段1 Outer-CKKS-Agg -------------------------------------------
-    def outer_encrypt_block(self, block: Sequence[float]):
-        return outer_encrypt(self.ctx_outer, self.PK, block, self.delta, self.rng)
+    def outer_encrypt_block(self, block: Sequence[float],
+                            rng: Optional[np.random.RandomState] = None):
+        return outer_encrypt(self.ctx_outer, self.PK, block, self.delta,
+                             self.rng if rng is None else rng)
 
     # ---- 阶段2 Cluster-R1 -------------------------------------------------
-    def cluster_r1(self, c: int, c1, online1: Sequence[int]) -> dict:
+    def cluster_r1(self, c: int, c1, online1: Sequence[int],
+                   rng: Optional[np.random.RandomState] = None) -> dict:
         """第 c 簇第一回合（在线集 T1，|T1|≥t_c）：客户端内层加密份额与噪声，
         CH_c 广播 Lagrange 系数。返回 per-client 记录（测试/安全冒烟用）。"""
         ctx_o, ctx_i = self.ctx_outer, self.ctx_inner
+        rng = self.rng if rng is None else rng
         if len(online1) < self.t_c:
             raise ValueError(f"簇 {c} 第一回合在线数 {len(online1)} < t_c={self.t_c}")
         # CRS 生成本轮公共基底 −a'_c·u'_c
-        a_c = ctx_i.uniform_poly(self.rng)
-        u_c = ctx_i.uniform_poly(self.rng)
+        a_c = ctx_i.uniform_poly(rng)
+        u_c = ctx_i.uniform_poly(rng)
         neg_au = ctx_i.poly_neg(ctx_i.poly_mul(a_c, u_c))
         lam = lagrange_coeffs(ctx_o, [i + 1 for i in online1])
 
@@ -157,13 +188,13 @@ class HierATHFHE:
             s_ci = self.shares[c][i]
             b_ci = ctx_o.poly_mul(c1, s_ci)              # 外层份额 b_{c,i}=c1·s_{c,i}
             # 两把内层私钥 + 簇内 Shamir 分片（评估点 x=j+1）
-            ek1 = ctx_i.gauss_poly(self.rng)             # 小系数私钥
-            ek2 = ctx_i.gauss_poly(self.rng)
-            sh1 = shamir_share(ctx_i, ek1, self.cluster_sizes[c], self.t_c, self.rng)
-            sh2 = shamir_share(ctx_i, ek2, self.cluster_sizes[c], self.t_c, self.rng)
-            n_ci = ctx_i.small_uniform(self.rng, self.B_sm)      # 掩码噪声
-            e1 = ctx_i.small_uniform(self.rng, self.B_prime)     # 内层底噪（界 B'）
-            e2 = ctx_i.small_uniform(self.rng, self.B_prime)
+            ek1 = ctx_i.gauss_poly(rng)                  # 小系数私钥
+            ek2 = ctx_i.gauss_poly(rng)
+            sh1 = shamir_share(ctx_i, ek1, self.cluster_sizes[c], self.t_c, rng)
+            sh2 = shamir_share(ctx_i, ek2, self.cluster_sizes[c], self.t_c, rng)
+            n_ci = ctx_i.small_uniform(rng, self.B_sm)      # 掩码噪声
+            e1 = ctx_i.small_uniform(rng, self.B_prime)     # 内层底噪（界 B'）
+            e2 = ctx_i.small_uniform(rng, self.B_prime)
             au1 = ctx_i.poly_mul(ctx_i.poly_mul(a_c, ek1), u_c)
             au2 = ctx_i.poly_mul(ctx_i.poly_mul(a_c, ek2), u_c)
             # Δ' 编码：Δ'·b 与 Δ'·n 视为 [0,Q) 代表直接嵌入内层环
@@ -239,12 +270,34 @@ class HierATHFHE:
         lifted = self.ctx_outer.center_lift(m.astype(self.ctx_outer.dtype))
         return np.asarray(lifted, dtype=np.float64) / self.delta
 
+    # ---- 单块四阶段（并行 worker 与串行共用）----------------------------
+    def run_block(self, blk: int, blocks: Dict[int, Sequence[float]],
+                  online1: Sequence[int], per_cluster1: Dict[int, List[int]],
+                  per_cluster2: Dict[int, List[int]],
+                  rng: Optional[np.random.RandomState] = None) -> np.ndarray:
+        """单个块的四阶段协议。blocks: {全局编号 g: 该块浮点向量}（在线集
+        online1 的梯度参与外层聚合）。返回聚合和向量（M/2 维）。"""
+        rng = self.rng if rng is None else rng
+        ct = None
+        for g in online1:
+            ct_i = outer_encrypt(self.ctx_outer, self.PK, blocks[g],
+                                 self.delta, rng)
+            ct = ct_i if ct is None else outer_add(self.ctx_outer, ct, ct_i)
+        c0, c1 = ct
+        cluster_b = []
+        for c in range(self.C):
+            view = self.cluster_r1(c, c1, per_cluster1[c], rng=rng)
+            b_c, _ = self.cluster_r2(c, view, per_cluster2[c])
+            cluster_b.append(b_c)
+        dec = self.cloud_decode(c0, cluster_b)
+        return dec[:self.M // 2].copy()
+
     # ---- 端到端 ----------------------------------------------------------
     def run_protocol(self, client_chunks: Sequence[Sequence[Sequence[float]]],
                      online1: Optional[Sequence[int]] = None,
                      online2: Optional[Sequence[int]] = None,
                      ) -> Tuple[List[np.ndarray], dict]:
-        """按块并行跑完整四阶段协议。
+        """按块跑完整四阶段协议。
 
         Args:
             client_chunks: [客户端][块] → 浮点向量（每块 ≤ M/2 维）
@@ -254,6 +307,9 @@ class HierATHFHE:
 
         Returns:
             (聚合和向量列表（每块 M/2 维），成本统计 dict)
+
+        块间可选多进程并行（self.parallel）：每块随机流为
+        block_rng(self.seed, blk)，并行 agg 结果与串行逐位一致。
         """
         t_start = time.time()
         N = len(client_chunks)
@@ -281,39 +337,67 @@ class HierATHFHE:
         for c in range(self.C):
             setup_bytes += self.cluster_sizes[c] * self._poly_bytes_outer()
 
-        upload_bytes = 0  # 阶段1 外层密文：每在线客户端每块 2 个 R_{M,Q} 多项式
-        inner_bytes = 0   # 阶段2/3 内层密文与密钥份额（R_{M,Q'} 多项式）
+        n1, n2 = len(online1), len(online2)
+        pb_o = self._poly_bytes_outer()
+        pb_i = self._poly_bytes_inner()
+        per_block = dict(
+            athfhe_comm_p1_upload=2 * pb_o * n1,            # P→CH/CS 外层密文
+            athfhe_comm_p1_broadcast_c1=pb_o,               # CS→全体P 广播 c1
+            athfhe_comm_p2_ct=2 * pb_i * n1,                # P→CH 内层双密文首项
+            athfhe_comm_p2_ek=2 * pb_i * n1,                # P→CH ek1/ek2 簇内份额
+            athfhe_comm_p3_dkshare=pb_i * n2,               # 节点 j→CH dkShare
+            athfhe_comm_p3_bc=pb_o * self.C,                # CH_c→CS 簇级份额 b'_c
+        )
 
-        agg_blocks: List[np.ndarray] = []
-        for blk in range(n_blocks):
-            # ---- 阶段1：外层加密 + 两级密文聚合（在线集 = online1 的并集覆盖即可；
-            #       外层聚合只用第一回合在线客户端的梯度密文）----
-            ct = None
-            for g in online1:
-                ct_i = self.outer_encrypt_block(client_chunks[g][blk])
-                upload_bytes += 2 * self._poly_bytes_outer()
-                ct = ct_i if ct is None else outer_add(self.ctx_outer, ct, ct_i)
-            c0, c1 = ct
-            # ---- 阶段2 Cluster-R1（逐簇）----
-            cluster_b = []
-            for c in range(self.C):
-                view = self.cluster_r1(c, c1, per_cluster1[c])
-                # 通信计数：每在线客户端 2 个内层双密文首项（各含一个多项式 +
-                # 共享 c'_1=−a'u'），簇内 ek 分片两回合合计 2 个多项式往返
-                inner_bytes += len(per_cluster1[c]) * 2 * self._poly_bytes_inner()
-                inner_bytes += len(per_cluster1[c]) * 2 * self._poly_bytes_inner()
-                # ---- 阶段3 Cluster-R2 ----
-                b_c, _ = self.cluster_r2(c, view, per_cluster2[c])
-                cluster_b.append(b_c)
-            # ---- 阶段4 Cloud-CKKS-Decode ----
-            dec = self.cloud_decode(c0, cluster_b)
-            agg_blocks.append(dec[:self.M // 2].copy())
+        agg_blocks: List[Optional[np.ndarray]] = [None] * n_blocks
+        if self.parallel:
+            cpu = os.cpu_count() or 1
+            workers = self.parallel_workers if self.parallel_workers > 0 \
+                else min(cpu, _PARALLEL_MAX_WORKERS)
+            workers = min(workers, cpu, n_blocks)
+        else:
+            workers = 1
+
+        if workers > 1 and n_blocks >= _PARALLEL_MIN_BLOCKS:
+            tasks = [(blk, {g: client_chunks[g][blk] for g in online1},
+                      online1, per_cluster1, per_cluster2)
+                     for blk in range(n_blocks)]
+            # 跨轮复用进程池：避免每轮重新 spawn（Windows 下每个 worker
+            # 重导入 __main__/torch 既慢又占内存）
+            if self._pool is None or self._pool_workers != workers:
+                self._close_pool()
+                self._pool = mp.Pool(workers, initializer=_hier_pool_init,
+                                     initargs=(self,))
+                self._pool_workers = workers
+            pool = self._pool
+            done = 0
+            for blk, dec in pool.imap(_hier_pool_worker, tasks):
+                agg_blocks[blk] = dec
+                done += 1
+                if self.parallel_progress and done % 50 == 0:
+                    from base.log_utils import tag_info as _ti, LogTag as _LT
+                    _ti(_LT.ROUND,
+                        f"AThFHE-Hier 块并行进度 {done}/{n_blocks}")
+        else:
+            for blk in range(n_blocks):
+                blocks = {g: client_chunks[g][blk] for g in online1}
+                agg_blocks[blk] = self.run_block(
+                    blk, blocks, online1, per_cluster1, per_cluster2,
+                    rng=block_rng(self.seed, blk))
 
         crypto_time = time.time() - t_start
+        flow_total = sum(per_block.values()) * n_blocks
         cost = dict(
             athfhe_setup_bytes=setup_bytes,
-            athfhe_upload_bytes=upload_bytes,
-            athfhe_inner_bytes=inner_bytes,
+            # 聚合键（兼容旧口径，由细分键推导）
+            athfhe_upload_bytes=per_block['athfhe_comm_p1_upload'] * n_blocks,
+            athfhe_inner_bytes=(per_block['athfhe_comm_p2_ct']
+                                + per_block['athfhe_comm_p2_ek']
+                                + per_block['athfhe_comm_p3_dkshare']
+                                + per_block['athfhe_comm_p3_bc']) * n_blocks,
+            # 逐流程细分键（每轮；广播/dkShare/b'_c 按发送一次计）
+            **{k: v * n_blocks for k, v in per_block.items()},
+            athfhe_comm_total_bytes=flow_total,
             athfhe_crypto_time=crypto_time,
             athfhe_num_online1=len(online1),
             athfhe_num_online2=len(online2),
@@ -324,7 +408,29 @@ class HierATHFHE:
             athfhe_delta_bits=self.delta.bit_length() - 1,
             athfhe_delta_prime_bits=self.delta_prime.bit_length() - 1,
         )
-        return agg_blocks, cost
+        return list(agg_blocks), cost
+
+
+# =====================================================================
+# 块并行 worker（Windows spawn 兼容：模块级函数 + initializer 缓存协议）
+# =====================================================================
+_HIER_POOL_PROTO = None
+
+
+def _hier_pool_init(proto: HierATHFHE) -> None:
+    """Pool initializer：把协议实例缓存为 worker 全局（仅初始化时 pickle 一次）"""
+    global _HIER_POOL_PROTO
+    _HIER_POOL_PROTO = proto
+
+
+def _hier_pool_worker(args):
+    """单块任务：(blk, blocks, online1, per_cluster1, per_cluster2)
+    → (blk, dec)"""
+    blk, blocks, online1, per_cluster1, per_cluster2 = args
+    proto = _HIER_POOL_PROTO
+    dec = proto.run_block(blk, blocks, online1, per_cluster1, per_cluster2,
+                          rng=block_rng(proto.seed, blk))
+    return blk, dec
 
 
 __all__ = ['HierATHFHE']

@@ -11,3 +11,7 @@ extends: config.yaml
 
 athfhe_hier:
   enabled: true
+  parallel: true          # 块间多进程并行（每块独立确定性随机流，与串行逐位一致）
+  parallel_workers: 0     # 0 = 自动 min(cpu_count, n_blocks)；≤1 或块数 <8 退回串行
+  parallel_progress: false  # 并行时每 50 块打印进度
+  real_coeff_bits: 218    # 等效真实 CKKS 折算系数位宽（0 = 关闭折算）

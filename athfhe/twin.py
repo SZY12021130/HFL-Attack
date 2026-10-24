@@ -28,6 +28,8 @@ athfhe/twin.py：方案二——面向 CKKS 的非共谋双服务器架构
 """
 
 import hashlib
+import multiprocessing as mp
+import os
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -40,6 +42,18 @@ from athfhe.ckks_toy import (
 
 SEED_BYTES = 16          # 128-bit 种子
 TLS_RECORD_BYTES = 32    # P_i→S_H 两条种子的安全信道记录字节数
+
+# 块并行的确定性随机源：每块独立 RandomState(seed, blk)，与串行逐位一致
+_PARALLEL_MIN_BLOCKS = 8     # 块数低于此值退回串行
+_PARALLEL_MAX_WORKERS = 8    # Windows spawn 下每 worker 重导入 __main__（torch 等），
+                             # 自动模式封顶，避免内存爆
+
+
+def block_rng(seed: int, blk: int) -> np.random.RandomState:
+    """块级确定性随机流：SeedSequence([seed, blk]) 派生（跨进程稳定）"""
+    st = np.random.SeedSequence([int(seed) & 0xFFFFFFFF,
+                                 int(blk) & 0xFFFFFFFF]).generate_state(1)
+    return np.random.RandomState(int(st[0]))
 
 
 def prg_expand_poly(seed: bytes, ctx: RingContext) -> np.ndarray:
@@ -61,7 +75,8 @@ class TwinATHFHE:
     def __init__(self, threshold: int = 3, ring_degree: int = 256,
                  outer_modulus_bits: int = 60, scale_bits: int = 40,
                  smudge_bits: int = 10, num_clients: int = 4,
-                 seed: int = 42):
+                 seed: int = 42, parallel: bool = True,
+                 parallel_workers: int = 0, parallel_progress: bool = False):
         """
         Args:
             threshold: T（门限，任意 ≥T 个在线客户端可完成解密）
@@ -71,6 +86,11 @@ class TwinATHFHE:
             smudge_bits: B_sm = 2^smudge_bits（掩码噪声界）
             num_clients: N（客户端总数）
             seed: 随机种子
+            parallel: 块间多进程并行（True 时 workers>1 且块数 ≥8 才生效；
+                      每块随机流由 block_rng(seed, blk) 派生，并行结果与
+                      串行逐位一致）
+            parallel_workers: 并行进程数（0 = 自动 min(cpu_count, n_blocks)）
+            parallel_progress: 并行时每 50 块打印一次进度（默认静默）
         """
         if num_clients < 1:
             raise ValueError("客户端数 N 必须 ≥ 1")
@@ -83,6 +103,11 @@ class TwinATHFHE:
         self.B_sm = 1 << int(smudge_bits)
         self.rng = np.random.RandomState(seed)
         self.seed = seed
+        self.parallel = bool(parallel)
+        self.parallel_workers = int(parallel_workers)
+        self.parallel_progress = bool(parallel_progress)
+        self._pool = None          # 跨轮复用的进程池（惰性创建）
+        self._pool_workers = 0
 
         # 外层环（内层复用同一环——不升环）
         self.ctx = RingContext(next_prime(1 << outer_modulus_bits), self.M)
@@ -99,26 +124,32 @@ class TwinATHFHE:
         self.sh_view: Dict[str, list] = {'seeds': [None] * self.N, 'rosters': []}
 
     # ---- 阶段1 -----------------------------------------------------------
-    def outer_encrypt_block(self, block: Sequence[float]):
-        return outer_encrypt(self.ctx, self.PK, block, self.delta, self.rng)
+    def outer_encrypt_block(self, block: Sequence[float],
+                            rng: Optional[np.random.RandomState] = None):
+        return outer_encrypt(self.ctx, self.PK, block, self.delta,
+                             self.rng if rng is None else rng)
 
-    def new_crs(self) -> Tuple[np.ndarray, np.ndarray]:
+    def new_crs(self, rng: Optional[np.random.RandomState] = None
+                ) -> Tuple[np.ndarray, np.ndarray]:
         """CRS 每轮生成公共基底 a'·u' ∈ R_{M,Q}"""
-        a_ = self.ctx.uniform_poly(self.rng)
-        u_ = self.ctx.uniform_poly(self.rng)
+        rng = self.rng if rng is None else rng
+        a_ = self.ctx.uniform_poly(rng)
+        u_ = self.ctx.uniform_poly(rng)
         return a_, u_
 
     # ---- 阶段2 Client-OneShot-Upload --------------------------------------
-    def client_one_shot(self, c1, s_i: np.ndarray, a_, u_):
+    def client_one_shot(self, c1, s_i: np.ndarray, a_, u_,
+                        rng: Optional[np.random.RandomState] = None):
         """单轮发完即走：返回 ((c'_{b,0}, c'_{n,0}), (seed1, seed2), n_i, b_i)"""
         ctx = self.ctx
+        rng = self.rng if rng is None else rng
         b_i = ctx.poly_mul(c1, s_i)                       # 外层份额 b_i=c1·s_i
-        n_i = ctx.small_uniform(self.rng, self.B_sm)      # 掩码噪声
+        n_i = ctx.small_uniform(rng, self.B_sm)           # 掩码噪声
         # 两个 128-bit 短种子（P_i→S_H 的 TLS 信道只传这 32 字节）
-        seed1 = bytes(self.rng.randint(0, 256, size=SEED_BYTES,
-                                       dtype=np.int64).astype(np.uint8))
-        seed2 = bytes(self.rng.randint(0, 256, size=SEED_BYTES,
-                                       dtype=np.int64).astype(np.uint8))
+        seed1 = bytes(rng.randint(0, 256, size=SEED_BYTES,
+                                  dtype=np.int64).astype(np.uint8))
+        seed2 = bytes(rng.randint(0, 256, size=SEED_BYTES,
+                                  dtype=np.int64).astype(np.uint8))
         ek1 = prg_expand_poly(seed1, ctx)                 # PRG 展开均匀随机掩码私钥
         ek2 = prg_expand_poly(seed2, ctx)
         c_b0 = ctx.poly_add(ctx.poly_mul(ctx.poly_mul(a_, ek1), u_), b_i)
@@ -173,11 +204,60 @@ class TwinATHFHE:
         lifted = ctx.center_lift(m.astype(ctx.dtype))
         return np.asarray(lifted, dtype=np.float64) / self.delta
 
+    def _close_pool(self) -> None:
+        """关闭跨轮复用的进程池（实验结束或 worker 数变化时调用）"""
+        if self._pool is not None:
+            self._pool.terminate()
+            self._pool.join()
+            self._pool = None
+            self._pool_workers = 0
+
+    def __del__(self):
+        try:
+            self._close_pool()
+        except Exception:
+            pass
+
+    # ---- 单块四阶段（并行 worker 与串行共用，rng 决定随机流）--------------
+    def run_block(self, blk: int, blocks: Dict[int, Sequence[float]],
+                  online: Sequence[int],
+                  rng: Optional[np.random.RandomState] = None
+                  ) -> Tuple[np.ndarray, Dict[int, tuple]]:
+        """单个块的四阶段协议。blocks: {全局编号 g: 该块浮点向量}。
+
+        返回 (聚合和向量（M/2 维）, {g: (seed1, seed2)} S_H 种子登记)。
+        串行路径传 block_rng(self.seed, blk) 时与并行逐位一致。"""
+        rng = self.rng if rng is None else rng
+        ctx = self.ctx
+        # ---- 阶段1：外层加密 + 同态聚合 + 广播 c1 ----
+        ct = None
+        for g in online:
+            ct_i = outer_encrypt(ctx, self.PK, blocks[g], self.delta, rng)
+            ct = ct_i if ct is None else outer_add(ctx, ct, ct_i)
+        c0, c1 = ct
+        # ---- 阶段2：Client-OneShot-Upload（单轮发完即走）----
+        a_, u_ = self.new_crs(rng)
+        neg_au = ctx.poly_neg(ctx.poly_mul(a_, u_))
+        ct0s: Dict[int, tuple] = {}
+        seeds_map: Dict[int, tuple] = {}
+        self.sh_view['seeds'] = [None] * self.N      # 本轮种子登记（S_H 视图）
+        for g in online:
+            (c_b0, c_n0), seeds, _n_i, _b_i = self.client_one_shot(
+                c1, self.client_shares[g], a_, u_, rng=rng)
+            ct0s[g] = (c_b0, c_n0)
+            seeds_map[g] = seeds
+            self.sh_view['seeds'][g] = seeds
+        # ---- 阶段3：Twin-Server-Coop ----
+        dk, rec = self.twin_server_coop(online, ct0s)
+        # ---- 阶段4：Final-CKKS-Decode（全程无取整，精确）----
+        dec = self.final_decode(c0, rec['c_all0'], neg_au, dk)
+        return dec[:self.M // 2].copy(), seeds_map
+
     # ---- 端到端 ----------------------------------------------------------
     def run_protocol(self, client_chunks: Sequence[Sequence[Sequence[float]]],
                      online: Optional[Sequence[int]] = None,
                      ) -> Tuple[List[np.ndarray], dict]:
-        """按块并行跑完整四阶段协议（单轮解密、发完即走）。
+        """按块跑完整四阶段协议（单轮解密、发完即走）。
 
         Args:
             client_chunks: [客户端][块] → 浮点向量（每块 ≤ M/2 维）
@@ -185,6 +265,9 @@ class TwinATHFHE:
 
         Returns:
             (聚合和向量列表（每块 M/2 维），成本统计 dict)
+
+        块间可选多进程并行（self.parallel）：每块随机流为
+        block_rng(self.seed, blk)，并行 agg 结果与串行逐位一致。
         """
         t_start = time.time()
         N = len(client_chunks)
@@ -200,51 +283,101 @@ class TwinATHFHE:
                 f"在线客户端数 |T|={len(online)} < 门限 T={self.T}，无法解密")
 
         setup_bytes = self.N * self.ctx.poly_bytes()     # Shamir 份额分发
-        upload_bytes = 0    # 阶段1 外层密文：每在线客户端每块 2 个多项式
-        seed_bytes = 0      # 阶段2 种子信道：每在线客户端 32 字节（TLS 记录）
-        inner_bytes = 0     # 阶段2 掩码密文：每在线客户端每块 2 个多项式（无 Q' 膨胀）
+        n_on = len(online)
+        pb = self.ctx.poly_bytes()
 
-        agg_blocks: List[np.ndarray] = []
-        for blk in range(n_blocks):
-            # ---- 阶段1：外层加密 + 同态聚合 + 广播 c1 ----
-            ct = None
-            for g in online:
-                ct_i = self.outer_encrypt_block(client_chunks[g][blk])
-                upload_bytes += 2 * self.ctx.poly_bytes()
-                ct = ct_i if ct is None else outer_add(self.ctx, ct, ct_i)
-            c0, c1 = ct
-            # ---- 阶段2：Client-OneShot-Upload（单轮发完即走）----
-            a_, u_ = self.new_crs()
-            neg_au = self.ctx.poly_neg(self.ctx.poly_mul(a_, u_))
-            ct0s: Dict[int, tuple] = {}
-            self.sh_view['seeds'] = [None] * N             # 本轮种子登记（S_H 视图）
-            for g in online:
-                (c_b0, c_n0), seeds, _n_i, _b_i = self.client_one_shot(
-                    c1, self.client_shares[g], a_, u_)
-                ct0s[g] = (c_b0, c_n0)
-                self.sh_view['seeds'][g] = seeds
-                seed_bytes += TLS_RECORD_BYTES
-                inner_bytes += 2 * self.ctx.poly_bytes()
-            # ---- 阶段3：Twin-Server-Coop ----
-            dk, _rec = self.twin_server_coop(online, ct0s)
-            # ---- 阶段4：Final-CKKS-Decode（全程无取整，精确）----
-            dec = self.final_decode(c0, _rec['c_all0'], neg_au, dk)
-            agg_blocks.append(dec[:self.M // 2].copy())
+        agg_blocks: List[Optional[np.ndarray]] = [None] * n_blocks
+        if self.parallel:
+            cpu = os.cpu_count() or 1
+            workers = self.parallel_workers if self.parallel_workers > 0 \
+                else min(cpu, _PARALLEL_MAX_WORKERS)
+            workers = min(workers, cpu, n_blocks)
+        else:
+            workers = 1
+
+        if workers > 1 and n_blocks >= _PARALLEL_MIN_BLOCKS:
+            tasks = [(blk, online,
+                      {g: client_chunks[g][blk] for g in online})
+                     for blk in range(n_blocks)]
+            # 跨轮复用进程池：避免每轮重新 spawn（Windows 下每个 worker
+            # 重导入 __main__/torch 既慢又占内存）
+            if self._pool is None or self._pool_workers != workers:
+                self._close_pool()
+                self._pool = mp.Pool(workers, initializer=_twin_pool_init,
+                                     initargs=(self,))
+                self._pool_workers = workers
+            pool = self._pool
+            done = 0
+            for blk, dec, seeds_map in pool.imap(_twin_pool_worker, tasks):
+                agg_blocks[blk] = dec
+                # 主进程同步 S_H 视图（串行语义：每块重置 seeds、追加名单）
+                self.sh_view['seeds'] = [None] * N
+                for g, sd in seeds_map.items():
+                    self.sh_view['seeds'][g] = sd
+                self.sh_view['rosters'].append(list(online))
+                done += 1
+                if self.parallel_progress and done % 50 == 0:
+                    from base.log_utils import tag_info as _ti, LogTag as _LT
+                    _ti(_LT.ROUND,
+                        f"AThFHE-Twin 块并行进度 {done}/{n_blocks}")
+        else:
+            for blk in range(n_blocks):
+                blocks = {g: client_chunks[g][blk] for g in online}
+                dec, _seeds = self.run_block(
+                    blk, blocks, online, rng=block_rng(self.seed, blk))
+                agg_blocks[blk] = dec
 
         crypto_time = time.time() - t_start
         cost = dict(
             athfhe_setup_bytes=setup_bytes,
-            athfhe_upload_bytes=upload_bytes,
-            athfhe_inner_bytes=inner_bytes,
-            athfhe_seed_bytes=seed_bytes,
+            # 聚合键（兼容旧口径，由细分键推导）
+            athfhe_upload_bytes=2 * pb * n_on * n_blocks,
+            athfhe_inner_bytes=2 * pb * n_on * n_blocks,
+            athfhe_seed_bytes=TLS_RECORD_BYTES * n_on * n_blocks,
+            # 逐流程细分键（每轮；广播/名单/dk 按发送一次计）
+            athfhe_comm_p1_upload=2 * pb * n_on * n_blocks,       # P_i→S_A 外层密文
+            athfhe_comm_p1_broadcast_c1=pb * n_blocks,            # S_A→全体P_i 广播 c1
+            athfhe_comm_p2_mask=2 * pb * n_on * n_blocks,         # P_i→S_A 掩码密文
+            athfhe_comm_p2_seed=TLS_RECORD_BYTES * n_on * n_blocks,  # P_i→S_H 种子
+            athfhe_comm_p3_list=2 * n_on,                         # S_A→S_H 名单 |T|×2B
+            athfhe_comm_p3_dk=pb * n_blocks,                      # S_H→S_A 联合密钥 dk
+            athfhe_comm_total_bytes=(
+                2 * pb * n_on * n_blocks          # p1_upload
+                + pb * n_blocks                   # p1_broadcast_c1
+                + 2 * pb * n_on * n_blocks        # p2_mask
+                + TLS_RECORD_BYTES * n_on * n_blocks  # p2_seed
+                + 2 * n_on                        # p3_list
+                + pb * n_blocks),                 # p3_dk
             athfhe_crypto_time=crypto_time,
-            athfhe_num_online=len(online),
+            athfhe_num_online=n_on,
             athfhe_num_blocks=n_blocks,
             athfhe_M=self.M,
             athfhe_Q_bits=self.ctx.q.bit_length(),
             athfhe_delta_bits=self.delta.bit_length() - 1,
         )
-        return agg_blocks, cost
+        return list(agg_blocks), cost
 
 
-__all__ = ['TwinATHFHE', 'prg_expand_poly', 'SEED_BYTES', 'TLS_RECORD_BYTES']
+# =====================================================================
+# 块并行 worker（Windows spawn 兼容：模块级函数 + initializer 缓存协议）
+# =====================================================================
+_TWIN_POOL_PROTO = None
+
+
+def _twin_pool_init(proto: TwinATHFHE) -> None:
+    """Pool initializer：把协议实例缓存为 worker 全局（仅初始化时 pickle 一次）"""
+    global _TWIN_POOL_PROTO
+    _TWIN_POOL_PROTO = proto
+
+
+def _twin_pool_worker(args):
+    """单块任务：(blk, online, blocks) → (blk, dec, seeds_map)"""
+    blk, online, blocks = args
+    proto = _TWIN_POOL_PROTO
+    dec, seeds_map = proto.run_block(
+        blk, blocks, online, rng=block_rng(proto.seed, blk))
+    return blk, dec, seeds_map
+
+
+__all__ = ['TwinATHFHE', 'prg_expand_poly', 'block_rng',
+           'SEED_BYTES', 'TLS_RECORD_BYTES']

@@ -467,3 +467,114 @@ def test_track_conflict_raises(tmp_path):
     from main import CKKSFedExperiment
     with pytest.raises(ValueError, match="冲突"):
         CKKSFedExperiment(path, output_dir=str(tmp_path))
+
+
+# =====================================================================
+# 7. 块并行确定性（multiprocessing，Windows spawn 兼容）
+# =====================================================================
+def test_parallel_matches_serial_twin():
+    """twin：parallel(workers=2) 与串行 agg_blocks 逐位一致、cost 各键相等"""
+    n_blocks = 10
+    chunks = _grad_chunks(4, n_blocks, seed=42)
+    serial = _twin_proto(seed=31, parallel=False)
+    agg_s, cost_s = serial.run_protocol(chunks)
+    par = _twin_proto(seed=31, parallel=True, parallel_workers=2)
+    agg_p, cost_p = par.run_protocol(chunks)
+    assert len(agg_s) == n_blocks
+    for b in range(n_blocks):
+        assert np.array_equal(agg_s[b], agg_p[b]), f"块 {b} 并行/串行不一致"
+    for k in cost_s:
+        if k == 'athfhe_crypto_time':
+            continue
+        assert cost_s[k] == cost_p[k], f"cost 键 {k} 不一致"
+
+
+def test_parallel_matches_serial_hier():
+    """hier：parallel(workers=2) 与串行 agg_blocks 逐位一致、cost 各键相等"""
+    n_blocks = 10
+    chunks = _grad_chunks(6, n_blocks, seed=43)
+    serial = _hier_proto(seed=32, parallel=False)
+    agg_s, cost_s = serial.run_protocol(chunks)
+    par = _hier_proto(seed=32, parallel=True, parallel_workers=2)
+    agg_p, cost_p = par.run_protocol(chunks)
+    for b in range(n_blocks):
+        assert np.array_equal(agg_s[b], agg_p[b]), f"块 {b} 并行/串行不一致"
+    for k in cost_s:
+        if k == 'athfhe_crypto_time':
+            continue
+        assert cost_s[k] == cost_p[k], f"cost 键 {k} 不一致"
+
+
+# =====================================================================
+# 8. 逐流程通信键完整性
+# =====================================================================
+def test_twin_per_flow_comm_keys():
+    """twin：全部逐流程键存在，且六键之和 == athfhe_comm_total_bytes == 该轮总通信"""
+    proto = _twin_proto(seed=33)
+    chunks = _grad_chunks(4, 3, seed=44)
+    _agg, cost = proto.run_protocol(chunks)
+    keys = ('athfhe_comm_p1_upload', 'athfhe_comm_p2_mask',
+            'athfhe_comm_p2_seed', 'athfhe_comm_p3_dk',
+            'athfhe_comm_p3_list', 'athfhe_comm_p1_broadcast_c1')
+    for k in keys:
+        assert k in cost and cost[k] > 0, f"逐流程键 {k} 缺失"
+    assert sum(cost[k] for k in keys) == cost['athfhe_comm_total_bytes']
+    # 兼容聚合键可由细分键推导
+    assert cost['athfhe_upload_bytes'] == cost['athfhe_comm_p1_upload']
+    assert cost['athfhe_inner_bytes'] == cost['athfhe_comm_p2_mask']
+    assert cost['athfhe_seed_bytes'] == cost['athfhe_comm_p2_seed']
+
+
+def test_hier_per_flow_comm_keys():
+    """hier：逐流程键存在且之和 == athfhe_comm_total_bytes"""
+    proto = _hier_proto(seed=34)
+    chunks = _grad_chunks(6, 3, seed=45)
+    _agg, cost = proto.run_protocol(chunks)
+    keys = ('athfhe_comm_p1_upload', 'athfhe_comm_p1_broadcast_c1',
+            'athfhe_comm_p2_ct', 'athfhe_comm_p2_ek',
+            'athfhe_comm_p3_dkshare', 'athfhe_comm_p3_bc')
+    for k in keys:
+        assert k in cost and cost[k] > 0, f"逐流程键 {k} 缺失"
+    assert sum(cost[k] for k in keys) == cost['athfhe_comm_total_bytes']
+
+
+# =====================================================================
+# 9. 论文口径指标（轨道级，slow）
+# =====================================================================
+@pytest.mark.slow
+def test_track_real_ckks_conversion(tmp_path):
+    """real_coeff_bits=218：athfhe_comm_real_bytes ≈ 总通信 × 折算系数（1% 容差）"""
+    path = _write_cfg(tmp_path, 'athfhe_twin',
+                      extra=lambda c: c['athfhe_twin'].update(
+                          {'real_coeff_bits': 218}))
+    from main import CKKSFedExperiment
+    exp = CKKSFedExperiment(path, output_dir=str(tmp_path))
+    exp.run_experiment()
+    m = exp.metrics.get_metrics()
+    total = sum(sum(m.get(k, [])) for k in
+                ('athfhe_comm_p1_upload', 'athfhe_comm_p2_mask',
+                 'athfhe_comm_p2_seed', 'athfhe_comm_p3_dk',
+                 'athfhe_comm_p3_list', 'athfhe_comm_p1_broadcast_c1'))
+    real = sum(m['athfhe_comm_real_bytes'])
+    # tiny 配置 outer_modulus_bits=48 → Q=49bit：系数 = ceil(218/8)/ceil(49/8)
+    # = 28/7 = 4.0（默认 60bit 配置下为 28/8 = 3.5）
+    factor = 28 / 7
+    assert abs(real - total * factor) / (total * factor) < 0.01
+    assert m['athfhe_real_coeff_bits'] == [218]
+
+
+@pytest.mark.slow
+def test_track_straggler_round_time(tmp_path):
+    """straggler 指标：total_round_time_simulated > 0 且 ≥ max local_train_time；
+    upload_time/download_time ≥ 0"""
+    path = _write_cfg(tmp_path, 'athfhe_twin')
+    from main import CKKSFedExperiment
+    exp = CKKSFedExperiment(path, output_dir=str(tmp_path))
+    exp.run_experiment()
+    m = exp.metrics.get_metrics()
+    sim = m['total_round_time_simulated']
+    train = m['local_train_time']
+    assert all(t > 0 for t in sim)
+    assert all(s >= t for s, t in zip(sim, train))
+    assert all(t >= 0 for t in m['upload_time'])
+    assert all(t >= 0 for t in m['download_time'])
