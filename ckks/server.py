@@ -10,13 +10,14 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 import time
 import logging
-from ckks_fed.defenses import aggregation_rules, anomaly_detection
+from ckks.defenses import aggregation_rules
+from base import anomaly as anomaly_detection
 from baseline import AGGREGATION_REGISTRY
-from ckks_fed.log_utils import (
+from base.log_utils import (
     LogTag, tag_info,
     log_aggregation_result, log_evaluation_result,
 )
-from ckks_fed.global_mask_vote import GlobalMaskVote
+from ckks.global_mask_vote import GlobalMaskVote
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ class AggregationServer:
         
         # PTopk 服务器累加器（明文路径）
         # 只在启用包级稀疏化时才生效，否则跳过
-        from ckks_fed.sparsification import NoSparsification
+        from ckks.sparsification import NoSparsification
         ptopk = self.ckks_manager.ptopk if self.ckks_manager else None
         sparsification_enabled = (
             self.ckks_manager is not None and

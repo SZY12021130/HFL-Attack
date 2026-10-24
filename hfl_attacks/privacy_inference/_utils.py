@@ -115,7 +115,7 @@ def inversion_metrics(reconstructed: torch.Tensor,
 
 def make_test_model(model_name: str = "mlp") -> torch.nn.Module:
     """构造 ckks_fed 的 MNIST 测试模型"""
-    from ckks_fed.models import create_model
+    from base.models import create_model
     config = {
         "data": {"dataset": "mnist", "num_classes": 10},
         "model": {"dropout": 0.0},

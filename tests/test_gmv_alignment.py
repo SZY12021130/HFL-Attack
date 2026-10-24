@@ -3,8 +3,8 @@
 验证投票切分大小和加密 chunk 大小完全一致。
 """
 import torch
-from ckks_fed.packing import MergedPacking
-from ckks_fed.global_mask_vote import GlobalMaskVote
+from ckks.packing import MergedPacking
+from ckks.global_mask_vote import GlobalMaskVote
 
 
 def make_lenet_update():

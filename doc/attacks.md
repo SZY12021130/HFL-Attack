@@ -57,12 +57,12 @@ hfl_attacks/（攻击实现库，25 个注册攻击）
         │  系统攻击 system:* → 每轮篡改更新 + DoS 类按 participates() 剔除掉线客户端
         │  隐私推断 privacy:*→ 不修改训练；用 hfl_attacks/runner.py 单独评估指标
         ▼
-ckks_fed/defenses/（防御：median / krum / trimmed_mean 等）
+ckks/defenses/（防御：median / krum / trimmed_mean 等）
    仅在明文聚合路径生效；当前密文聚合路径下密文不可解密，防御不生效，
    保留作明文对照与层次化架构中“边缘可信节点过滤”的未来候选。
 ```
 
-- 旧的 `configs/attack_config.yaml` + `main_robustness.py` + `ckks_fed/experiments/attack_runner.py`
+- 旧的 `configs/attack_config.yaml` + `main_robustness.py` + `（已移除的遗留脚本）`
   攻击×防御矩阵系统已删除：它是与 `hfl_attacks/` 平行的旧实现，重复维护且与主配置漂移。
   矩阵扫描类实验请使用 `hfl_attacks/runner.py`（按名称遍历注册表）。
 - 恶意客户端固定为编号最大的最后 `attack.malicious_count` 个；`main.py` 中
@@ -545,7 +545,7 @@ python -m hfl_attacks.runner --rounds 5 --out results/attack_eval_full
 
 #### 打包策略 `merged` 什么时候生效？
 
-`packing.strategy=merged` 的完整实现位于 `ckks_fed/packing.py`，它会把所有层先 concat 成一个长数组，再统一分块。在当前 runner（已启用 `global_mask_vote`）中，`encrypt_model_update` 走 `global_mask` 路径，且 packing 策略非 layerwise，因此会调用 `MergedPacking.pack()`：先 concat 再按 `slot_count` 分块，保证投票 mask 的边界与加密 chunk 边界一致。
+`packing.strategy=merged` 的完整实现位于 `ckks/packing.py`，它会把所有层先 concat 成一个长数组，再统一分块。在当前 runner（已启用 `global_mask_vote`）中，`encrypt_model_update` 走 `global_mask` 路径，且 packing 策略非 layerwise，因此会调用 `MergedPacking.pack()`：先 concat 再按 `slot_count` 分块，保证投票 mask 的边界与加密 chunk 边界一致。
 
 ---
 

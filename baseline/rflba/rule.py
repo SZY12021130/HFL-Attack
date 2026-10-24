@@ -9,7 +9,7 @@ RFLBA：余弦相似度过滤 + 质心估计
 import torch
 from typing import Dict, List, Optional
 
-from ckks_fed.defenses.anomaly_detection import cosine_similarity_filter
+from base.anomaly import cosine_similarity_filter
 from baseline.fedavg import aggregate as _fedavg_aggregate
 
 

@@ -10,16 +10,16 @@ from typing import List, Dict, Tuple, Optional, Any
 import logging
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from ckks_fed.packing import (
+from ckks.packing import (
     PackingStrategy, PackingMetadata,
     LayerwisePacking, MergedPacking,
     create_packing_strategy,
 )
-from ckks_fed.sparsification import (
+from ckks.sparsification import (
     SparsificationStrategy, NoSparsification,
     create_sparsification_strategy,
 )
-from ckks_fed.ptopk import PTopkModule, PTopkWrappedStrategy
+from ckks.ptopk import PTopkModule, PTopkWrappedStrategy
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

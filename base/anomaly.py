@@ -19,6 +19,14 @@ def _compute_norm(update: Dict[str, torch.Tensor]) -> float:
     return torch.norm(flat, p=2).item()
 
 
+def _coordinatewise_median(updates: List[Dict[str, torch.Tensor]]
+                           ) -> Dict[str, torch.Tensor]:
+    """逐坐标中位数参考更新（base 内部辅助，替代原对 baseline 的依赖）。"""
+    keys = updates[0].keys()
+    stacked = {k: torch.stack([u[k].float() for u in updates]) for k in keys}
+    return {k: v.median(dim=0).values for k, v in stacked.items()}
+
+
 def _compute_cosine_similarity(u1: Dict[str, torch.Tensor],
                                 u2: Dict[str, torch.Tensor]) -> float:
     """计算两个模型更新之间的余弦相似度"""
@@ -96,8 +104,7 @@ def cosine_similarity_filter(updates: List[Dict[str, torch.Tensor]],
     """
     if reference is None:
         # 使用中位数更新作为参考
-        from .aggregation_rules import median_aggregate
-        reference = median_aggregate(updates)
+        reference = _coordinatewise_median(updates)
     
     similarities = [_compute_cosine_similarity(u, reference) for u in updates]
     
@@ -136,8 +143,7 @@ def median_absolute_deviation_filter(updates: List[Dict[str, torch.Tensor]],
         threshold: MAD倍数阈值（通常取 2.5 或 3.0）
     """
     # 计算每个更新与中位数更新的逐元素距离
-    from .aggregation_rules import median_aggregate
-    median_update = median_aggregate(updates)
+    median_update = _coordinatewise_median(updates)
     
     distances = []
     for u in updates:
@@ -194,8 +200,7 @@ def multi_criteria_filter(updates: List[Dict[str, torch.Tensor]],
     
     # 第二步：余弦相似度过滤（在第一步结果上）
     if len(fu) > 1:
-        from .aggregation_rules import median_aggregate
-        ref = median_aggregate(fu)
+        ref = _coordinatewise_median(fu)
         fu, fw, ki2 = cosine_similarity_filter(fu, fw, reference=ref, threshold=cos_threshold)
         ki = [ki[i] for i in ki2]
     

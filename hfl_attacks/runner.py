@@ -37,11 +37,11 @@ import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader, TensorDataset
 
-from ckks_fed.crypto import CKKSManager, CKKSContext
-from ckks_fed.server import AggregationServer
-from ckks_fed.client import FederatedClient
-from ckks_fed.models import create_model
-from ckks_fed.data import create_client_dataloaders
+# 依赖纪律：hfl_attacks 不得静态 import 其他方案包——ckks 组件在
+# FLEnvironment.__init__ 内惰性导入（本 runner 是独立评估入口，用法见
+# 模块 docstring，惰性导入不影响命令行行为）
+from base.models import create_model
+from base.data import create_client_dataloaders
 from hfl_attacks.base import (
     ATTACK_REGISTRY, AttackContext, ClientUpdateAttack, DataPoisoner, PrivacyAttack,
 )
@@ -94,6 +94,11 @@ class FLEnvironment:
                 self.client_loaders[cid] = loader
 
         self.global_model = create_model(config['model']['name'], config)
+
+        # 惰性导入（见模块顶部说明）：本 runner 运行时才有 ckks 依赖
+        from ckks.crypto import CKKSManager, CKKSContext
+        from ckks.server import AggregationServer
+        from ckks.client import FederatedClient
 
         # 密钥分离：KGC 完整上下文 / 服务器公钥上下文 / 客户端完整上下文
         self.master_manager = CKKSManager(config['ckks'].copy())

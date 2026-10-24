@@ -217,7 +217,7 @@ class PPBRProtocol:
 
         if use_dh:
             # SA 阶段 1：真实 DH 密钥交换（公钥经边缘广播）
-            from ppbr.sa import SABucket, SAMember, sa_threshold
+            from base.sa import SABucket, SAMember, sa_threshold
             for eid, cs in groups.items():
                 present = [c for c in cs if c in m]
                 if len(present) < 2:
@@ -350,7 +350,7 @@ class PPBRProtocol:
         R = float(self.rng.uniform(1.0, 2.0))
         if use_dh and len(eids_t) >= 2:
             # 边缘级同样走真实 SA（成员=可信边缘，聚合方=云）
-            from ppbr.sa import SABucket as _CB, SAMember as _CM, sa_threshold
+            from base.sa import SABucket as _CB, SAMember as _CM, sa_threshold
             cbucket = _CB("cloud", round_num, sa_threshold(len(eids_t)))
             cmember = {}
             for eid in eids_t:

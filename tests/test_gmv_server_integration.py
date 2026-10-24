@@ -6,9 +6,9 @@ import torch
 import numpy as np
 from unittest.mock import MagicMock
 
-from ckks_fed.server import AggregationServer
-from ckks_fed.packing import MergedPacking
-from ckks_fed.global_mask_vote import GlobalMaskVote
+from ckks.server import AggregationServer
+from ckks.packing import MergedPacking
+from ckks.global_mask_vote import GlobalMaskVote
 
 
 def make_lenet_update():

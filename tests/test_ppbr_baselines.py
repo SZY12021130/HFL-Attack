@@ -52,7 +52,7 @@ def test_ipm_registered():
 
 def test_dnc_filters_gaussian_outlier():
     """高斯离群更新应被 DnC 剔除，聚合结果接近良性均值"""
-    from ckks_fed.defenses import dnc_aggregate
+    from ckks.defenses import dnc_aggregate
     updates = _mk_updates(1.0, 8, [10.0 * torch.ones(20), -10.0 * torch.ones(20)])
     agg = dnc_aggregate(updates, num_byzantine=2, seed=1)
     assert torch.allclose(agg["w"], torch.ones(20), atol=0.2), \
@@ -61,7 +61,7 @@ def test_dnc_filters_gaussian_outlier():
 
 def test_dnc_clean_case_matches_mean():
     """无攻击时 DnC 不应误伤良性更新"""
-    from ckks_fed.defenses import dnc_aggregate
+    from ckks.defenses import dnc_aggregate
     updates = _mk_updates(1.0, 8, [], seed=2)
     agg = dnc_aggregate(updates, num_byzantine=2, seed=1)
     assert torch.allclose(agg["w"], torch.ones(20), atol=0.15)
@@ -73,7 +73,7 @@ def test_dnc_clean_case_matches_mean():
 
 def test_centered_clipping_resists_ipm():
     """CenteredClipping 对 IPM 类方向反转攻击应收敛到良性均值附近"""
-    from ckks_fed.defenses import centered_clipping_aggregate
+    from ckks.defenses import centered_clipping_aggregate
     n, m = 8, 2
     benign = [torch.full((20,), 0.5) for _ in range(n - m)]
     # IPM: 恶意更新 = −1/(n−m)·Σ_benign = −0.5
@@ -85,7 +85,7 @@ def test_centered_clipping_resists_ipm():
 
 
 def test_centered_clipping_clean_case():
-    from ckks_fed.defenses import centered_clipping_aggregate
+    from ckks.defenses import centered_clipping_aggregate
     updates = _mk_updates(1.0, 8, [], seed=3)
     agg = centered_clipping_aggregate(updates, num_iter=5)
     assert torch.allclose(agg["w"], torch.ones(20), atol=0.1)

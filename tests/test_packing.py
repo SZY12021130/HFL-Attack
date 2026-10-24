@@ -4,8 +4,8 @@
 """
 
 import torch
-from ckks_fed.crypto import CKKSManager
-from ckks_fed.packing import create_packing_strategy, MergedPacking
+from ckks.crypto import CKKSManager
+from ckks.packing import create_packing_strategy, MergedPacking
 
 
 def make_dummy_update():

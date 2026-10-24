@@ -29,7 +29,7 @@ blob 二进制布局（大端）::
 import struct
 from typing import List, Sequence, Tuple
 
-from ppbr.sa import shamir_split, shamir_recover, _SHAMIR_P
+from base.sa import shamir_split, shamir_recover, _SHAMIR_P
 
 _BLOCK_LEN = 64   # ppbr/sa.py 单段秘密上限（2^512 内，域 2^521−1）
 _SHARE_LEN = 66   # 份额 y 值编码长度（ceil(521/8)，y ∈ [0, 2^521−1)）

@@ -58,7 +58,7 @@ scale 从 2^20 → 2^40 → 2^60，超出 `[40,20,40]` 模数链容量
 （`scale out of bounds`）。因此层次路径采用"**边缘一次乘法 + 云零次乘法**"：
 
 - 边缘：`weighted_average(..., normalize=False)`，按 α_i = w_i/W 预缩放后求和；
-- 云：权重全 1，`weighted_average` 自动走纯加法快速路径（`ckks_fed/crypto.py`）。
+- 云：权重全 1，`weighted_average` 自动走纯加法快速路径（`ckks/crypto.py`）。
 
 GMV（全局掩码投票）模式下所有选中客户端按同一全局 mask 上传，每个 batch 的
 贡献者集合相同，预缩放全局归一化严格正确。
@@ -108,16 +108,16 @@ hierarchy:
 ## 4. 代码结构
 
 ```
-ckks_fed/hierarchy.py
+ckks/hierarchy.py
 ├── EdgeNode                  # 边缘节点：公钥上下文、mask 部分计数、密文部分聚合
 ├── StaticAssignment          # 固定分片关联
 ├── UAVAssignment             # UAV 随机路点移动 + 最近关联
 └── HierarchyController       # 编排器：选边/分组/层次投票/边缘聚合
 
-ckks_fed/global_mask_vote.py
+ckks/global_mask_vote.py
 └── GlobalMaskVote.mask_from_counts()   # 计数→全局 mask（扁平/层次通用）
 
-ckks_fed/crypto.py
+ckks/crypto.py
 ├── CKKSManager.aggregate_encrypted_updates(..., normalize=False)
 └── CKKSEvaluator.weighted_average()    # 全 1 权重纯加法快速路径
 

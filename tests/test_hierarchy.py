@@ -54,7 +54,7 @@ def _hier_cfg(**over):
 
 def _fake_server_manager(cfg):
     """构造一个仅公钥的服务器 CKKSManager（与 main.py 相同方式）"""
-    from ckks_fed.crypto import CKKSContext, CKKSManager
+    from ckks.crypto import CKKSContext, CKKSManager
     full = CKKSManager(cfg['ckks'].copy())
     public_ctx = CKKSContext.from_full_bytes(
         full.context.get_context_bytes(),
@@ -63,7 +63,7 @@ def _fake_server_manager(cfg):
 
 
 def test_static_assignment_covers_all_clients():
-    from ckks_fed.hierarchy import StaticAssignment
+    from ckks.hierarchy import StaticAssignment
     a = StaticAssignment(num_clients=10, num_edges=3)
     mapping = a.assign(0)
     assert sorted(mapping.keys()) == list(range(10))
@@ -74,7 +74,7 @@ def test_static_assignment_covers_all_clients():
 
 
 def test_uav_assignment_valid_and_dynamic():
-    from ckks_fed.hierarchy import UAVAssignment
+    from ckks.hierarchy import UAVAssignment
     uav = UAVAssignment(num_clients=20, num_edges=4, seed=42)
     m0 = uav.assign(0)
     assert all(0 <= e < 4 for e in m0.values())
@@ -86,7 +86,7 @@ def test_uav_assignment_valid_and_dynamic():
 
 
 def test_uav_strict_coverage_excludes_far_clients():
-    from ckks_fed.hierarchy import UAVAssignment
+    from ckks.hierarchy import UAVAssignment
     uav = UAVAssignment(num_clients=20, num_edges=2,
                         coverage_radius=50.0, strict_coverage=True, seed=1)
     m = uav.assign(0)
@@ -98,14 +98,14 @@ def test_uav_strict_coverage_excludes_far_clients():
 # =====================================================================
 
 def test_edge_node_has_no_secret_key():
-    from ckks_fed.hierarchy import HierarchyController
+    from ckks.hierarchy import HierarchyController
     cfg = _hier_cfg()
     server_mgr, _ = _fake_server_manager(cfg)
     ctrl = HierarchyController(cfg, server_mgr, num_clients=10)
     for eid, edge in ctrl.edges.items():
         assert not edge.has_secret_key(), f"Edge #{eid} 不应持有私钥"
         # 边缘尝试解密必须失败
-        from ckks_fed.crypto import CKKSEncryptor
+        from ckks.crypto import CKKSEncryptor
         enc = CKKSEncryptor(edge.ckks_manager.context)
         ct = enc.encrypt(np.array([1.0, 2.0]))
         with pytest.raises(Exception):
@@ -118,8 +118,8 @@ def test_edge_node_has_no_secret_key():
 
 @pytest.mark.parametrize("mode", ["union", "threshold", "topk"])
 def test_hierarchical_mask_vote_equivalence(mode):
-    from ckks_fed.global_mask_vote import GlobalMaskVote
-    from ckks_fed.hierarchy import HierarchyController
+    from ckks.global_mask_vote import GlobalMaskVote
+    from ckks.hierarchy import HierarchyController
 
     gmv_cfg = {'mode': mode, 'threshold_pct': 0.5,
                'topk_count_k': 5, 'topk_pct': None}
@@ -155,7 +155,7 @@ def _make_update(seed):
 
 def test_hierarchical_aggregation_math_equivalence():
     """边缘两级聚合的结果必须与扁平聚合一致（解密后数值相等）"""
-    from ckks_fed.hierarchy import HierarchyController
+    from ckks.hierarchy import HierarchyController
 
     cfg = _hier_cfg(num_edges=2, assignment='static')
     cfg['ckks']['sparsification'] = {'strategy': 'none'}

@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import time
 import logging
-from ckks_fed.log_utils import (
+from base.log_utils import (
     LogTag, tag_info, tag_warn,
     log_training_result, log_encryption_result,
 )
@@ -285,7 +285,7 @@ class FederatedClient:
         values_per_chunk = packing.get_values_per_chunk() if packing else 8192
         
         # 调用 GlobalMaskVote 的静态方法在本地计算 mask
-        from ckks_fed.global_mask_vote import GlobalMaskVote
+        from ckks.global_mask_vote import GlobalMaskVote
         mask = GlobalMaskVote.compute_mask_from_update(
             model_update=model_update,
             batch_size=values_per_chunk,

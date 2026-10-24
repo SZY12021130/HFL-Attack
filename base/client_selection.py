@@ -6,7 +6,7 @@
   - random: 纯随机采样（默认）
 
 用法:
-    from ckks_fed.client_selection import create_client_selection_strategy
+    from base.client_selection import create_client_selection_strategy
     strategy = create_client_selection_strategy(config, num_clients=10)
     selected_ids = strategy.select(clients, num_needed=5, round_num=0)
 """
@@ -17,7 +17,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from ckks_fed.log_utils import LogTag, tag_info
+from base.log_utils import LogTag, tag_info
 
 logger = logging.getLogger(__name__)
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Dict, List, Sequence, Tuple
 
-from ppbr.sa import _SHAMIR_P
+from base.sa import _SHAMIR_P
 
 P = _SHAMIR_P   # 承诺值域模数
 G = 4           # 生成元（教学参数，见模块 docstring）

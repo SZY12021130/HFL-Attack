@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 
-from ckks_fed.crypto import CKKSContext, CKKSManager
-from ckks_fed.log_utils import LogTag, tag_info
+from ckks.crypto import CKKSContext, CKKSManager
+from base.log_utils import LogTag, tag_info
 from threshold import ThresholdConfig
 from threshold.sharing import split_secret, recover_secret
 from threshold.dkg import run_dkg, DKGResult

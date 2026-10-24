@@ -17,11 +17,11 @@ def test_imports():
     """测试模块导入"""
     logger.info("测试模块导入...")
     try:
-        from ckks_fed.crypto import CKKSContext, CKKSEncryptor, CKKSDecryptor, CKKSManager
-        from ckks_fed.models import MLP, CNN, create_model
-        from ckks_fed.data import get_data_transforms, load_dataset
-        from ckks_fed.client import FederatedClient
-        from ckks_fed.server import AggregationServer
+        from ckks.crypto import CKKSContext, CKKSEncryptor, CKKSDecryptor, CKKSManager
+        from base.models import MLP, CNN, create_model
+        from base.data import get_data_transforms, load_dataset
+        from ckks.client import FederatedClient
+        from ckks.server import AggregationServer
         logger.info("✓ 所有模块导入成功")
         return True
     except Exception as e:
@@ -33,7 +33,7 @@ def test_ckks_basic():
     """测试CKKS基本功能"""
     logger.info("测试CKKS基本功能...")
     try:
-        from ckks_fed.crypto import CKKSContext, CKKSEncryptor, CKKSDecryptor, CKKSEvaluator
+        from ckks.crypto import CKKSContext, CKKSEncryptor, CKKSDecryptor, CKKSEvaluator
         
         # 创建CKKS上下文
         context = CKKSContext(poly_modulus_degree=4096, 
@@ -88,7 +88,7 @@ def test_model_creation():
     """测试模型创建"""
     logger.info("测试模型创建...")
     try:
-        from ckks_fed.models import MLP, CNN
+        from base.models import MLP, CNN
         
         # 测试MLP
         mlp = MLP(input_dim=784, hidden_dims=[256, 128], num_classes=10)
@@ -118,7 +118,7 @@ def test_data_loading():
     """测试数据加载"""
     logger.info("测试数据加载...")
     try:
-        from ckks_fed.data import load_dataset
+        from base.data import load_dataset
         
         # 尝试加载MNIST（会下载）
         logger.info("  尝试加载MNIST数据集...")
@@ -165,7 +165,7 @@ def test_ckks_manager():
     """测试CKKS管理器"""
     logger.info("测试CKKS管理器...")
     try:
-        from ckks_fed.crypto import CKKSManager
+        from ckks.crypto import CKKSManager
         import torch
         
         config = {
@@ -206,8 +206,8 @@ def test_dataset_support():
     """测试多数据集支持"""
     logger.info("测试数据集支持...")
     try:
-        from ckks_fed.data import get_dataset_num_classes, get_data_transforms
-        from ckks_fed.models import create_model
+        from base.data import get_dataset_num_classes, get_data_transforms
+        from base.models import create_model
         import yaml
         
         datasets = ["mnist", "fashion_mnist", "cifar10", "cifar100", "svhn", "emnist"]

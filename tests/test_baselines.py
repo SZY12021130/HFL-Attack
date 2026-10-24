@@ -183,7 +183,7 @@ def test_fedavg_no_defense():
 def test_server_registry_dispatch():
     """AggregationServer 按 defense.aggregation_rule 从注册表分派（含旧名字）"""
     import torch.nn as nn
-    from ckks_fed.server import AggregationServer
+    from ckks.server import AggregationServer
 
     model = nn.Linear(4, 2)
     for rule in ["fedavg", "median", "trimmed_mean", "krum", "multi_krum",
@@ -207,7 +207,7 @@ def test_server_registry_dispatch():
 def test_server_unknown_rule_falls_back_to_fedavg():
     """未知聚合规则应回退 fedavg 并告警，不应抛异常"""
     import torch.nn as nn
-    from ckks_fed.server import AggregationServer
+    from ckks.server import AggregationServer
 
     model = nn.Linear(4, 2)
     config = {"defense": {"aggregation_rule": "no_such_rule",
@@ -224,8 +224,8 @@ def test_server_unknown_rule_falls_back_to_fedavg():
 
 
 def test_legacy_import_path_backward_compatible():
-    """旧导入路径 ckks_fed.defenses.*_aggregate 仍可用（re-export）"""
-    from ckks_fed.defenses import (
+    """旧导入路径 ckks.defenses.*_aggregate 仍可用（re-export）"""
+    from ckks.defenses import (
         fedavg_aggregate, median_aggregate, trimmed_mean_aggregate,
         krum_aggregate, multi_krum_aggregate, geometric_median_aggregate,
         dnc_aggregate, centered_clipping_aggregate,

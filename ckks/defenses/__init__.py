@@ -1,6 +1,7 @@
 """
-联邦学习防御模块
-提供多种鲁棒聚合规则和异常检测机制
+联邦学习防御模块（CKKS 轨道）
+提供多种鲁棒聚合规则（实现见 baseline/ 注册表，本包为兼容 re-export）。
+异常检测已上移至 base.anomaly（通用层，供各方案复用）。
 """
 
 from .aggregation_rules import (
@@ -14,11 +15,6 @@ from .aggregation_rules import (
     centered_clipping_aggregate,
 )
 
-from .anomaly_detection import (
-    norm_clip_updates,
-    cosine_similarity_filter,
-    median_absolute_deviation_filter,
-)
 
 __all__ = [
     # 聚合规则
@@ -30,8 +26,4 @@ __all__ = [
     "geometric_median_aggregate",
     "dnc_aggregate",
     "centered_clipping_aggregate",
-    # 异常检测
-    "norm_clip_updates",
-    "cosine_similarity_filter",
-    "median_absolute_deviation_filter",
 ]

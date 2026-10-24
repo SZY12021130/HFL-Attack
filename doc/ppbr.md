@@ -19,7 +19,7 @@
 | 评估 | 客户端解密后评估上报 | 对明文 w_a 直接评估 |
 | 全局投票 / TopK 稀疏化 | 可用（可插拔） | **不参与**（整条路线切换） |
 
-两轨**共享**：数据加载与划分（`ckks_fed/data.py`）、模型（`ckks_fed/models.py`）、
+两轨**共享**：数据加载与划分（`base/data.py`）、模型（`base/models.py`）、
 客户端本地训练（`FederatedClient.local_train`，PPBR 轨道以
 `global_params=` 明文入口复用）、攻击注入（`hfl_attacks` 注册表，
 PPBR 轨道在协议之前以完全相同语义注入）、边缘-客户端分组

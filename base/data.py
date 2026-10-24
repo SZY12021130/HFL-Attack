@@ -89,7 +89,7 @@ def load_dataset(dataset_name: str, data_dir: str = "./data"):
     else:
         raise ValueError(f"不支持的数据集: {dataset_name}")
     
-    from ckks_fed.log_utils import tag_info, LogTag
+    from base.log_utils import tag_info, LogTag
     tag_info(LogTag.INIT, f"Dataset loaded: {dataset_name}  |  train={len(train_dataset)}  |  test={len(test_dataset)}")
     return train_dataset, test_dataset
 
@@ -143,7 +143,7 @@ def partition_data_iid(dataset: Dataset, num_clients: int) -> List[Subset]:
         end_idx = (i + 1) * items_per_client if i < num_clients - 1 else num_items
         client_indices = all_indices[start_idx:end_idx]
         client_datasets.append(Subset(dataset, client_indices))
-    from ckks_fed.log_utils import tag_info, LogTag
+    from base.log_utils import tag_info, LogTag
     tag_info(LogTag.INIT, f"IID partition: ~{items_per_client} samples/client")
     return client_datasets
 
@@ -172,7 +172,7 @@ def partition_data_noniid(dataset: Dataset, num_clients: int, alpha: float = 0.5
             client_indices[i].append(client_indices[richest].pop())
 
     client_datasets = [Subset(dataset, indices) for indices in client_indices]
-    from ckks_fed.log_utils import tag_info, LogTag
+    from base.log_utils import tag_info, LogTag
     tag_info(LogTag.INIT, f"Non-IID partition (α={alpha}): samples/client={[len(ds) for ds in client_datasets]}")
     return client_datasets
 

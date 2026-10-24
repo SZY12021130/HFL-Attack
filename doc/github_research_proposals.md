@@ -56,7 +56,7 @@ xMKCKKS_Go2Py（Go cgo → ctypes，接口：公钥聚合/部分解密/份额聚
   - MK 分量结构：`threshold/toy_ckks.py` 的 RLWE 密文本身就是 (c0,c1) 分量形式，
     MK 加法=分量拼接，toy 级可实现；或桥接 xMKCKKS_Go2Py（ctypes）。
   - 份额分发/重构：`threshold/sharing.py`（Shamir + Lagrange 已有）。
-  - 层次/UAV：`ckks_fed/hierarchy.py`（assignment=uav 已有）。
+  - 层次/UAV：`ckks/hierarchy.py`（assignment=uav 已有）。
   - 评估：`hfl_attacks`（ALIE/IPM 直接打这个方案，故事完整）。
 - **对照实验**：vs 原 MK-CKKS（MASER 流程，掉线即失败）、vs CDKS-LSS（多一轮份额分发）、
   vs 我们的 PPBR（单密钥层次）。通信/掉线率/精度三维表。

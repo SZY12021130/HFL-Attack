@@ -2,7 +2,7 @@
 经典模型投毒攻击（新接口适配层）
 ================================
 
-对 ckks_fed.attacks.model_attacks 中已有的 6 个攻击类做组合式适配：
+对 hfl_attacks/common.py（原 ckks_fed/attacks/model_attacks.py）中已有的攻击类做组合式适配：
 包装类内部实例化旧类，`attack(update, context)` 中调用旧类的
 `attack(update, context.global_params)`。不修改旧文件。
 
@@ -30,7 +30,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from hfl_attacks.base import ClientUpdateAttack, register_attack
-from ckks_fed.attacks.model_attacks import (
+from hfl_attacks.common import (
     SignFlippingAttack,
     ScalingAttack,
     GaussianNoiseAttack,

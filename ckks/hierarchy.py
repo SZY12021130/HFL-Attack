@@ -40,8 +40,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ckks_fed.crypto import CKKSContext, CKKSManager
-from ckks_fed.global_mask_vote import GlobalMaskVote
+from base.grouping import (
+    BaseAssignment, StaticAssignment, UAVAssignment, create_assignment,
+)
+from ckks.crypto import CKKSContext, CKKSManager
+from ckks.global_mask_vote import GlobalMaskVote
 
 logger = logging.getLogger(__name__)
 
@@ -120,113 +123,6 @@ class EdgeNode:
 
 
 # =====================================================================
-# 客户端-边缘关联策略
-# =====================================================================
-
-class BaseAssignment:
-    """客户端-边缘关联策略基类"""
-
-    def assign(self, round_num: int) -> Dict[int, int]:
-        """返回 {client_id: edge_id}"""
-        raise NotImplementedError
-
-    def edge_client_map(self, round_num: int, num_edges: int) -> Dict[int, List[int]]:
-        mapping = self.assign(round_num)
-        result = {e: [] for e in range(num_edges)}
-        for cid, eid in mapping.items():
-            result[eid].append(cid)
-        for eid in result:
-            result[eid].sort()
-        return result
-
-
-class StaticAssignment(BaseAssignment):
-    """固定分片：边缘 e 负责连续的一段客户端 [e*n/E, (e+1)*n/E)"""
-
-    def __init__(self, num_clients: int, num_edges: int):
-        self.num_clients = num_clients
-        self.num_edges = num_edges
-
-    def assign(self, round_num: int) -> Dict[int, int]:
-        mapping = {}
-        per = self.num_clients // self.num_edges
-        rem = self.num_clients % self.num_edges
-        start = 0
-        for e in range(self.num_edges):
-            size = per + (1 if e < rem else 0)
-            for cid in range(start, start + size):
-                mapping[cid] = e
-            start += size
-        return mapping
-
-
-class UAVAssignment(BaseAssignment):
-    """
-    UAV 关联：UAV 按随机路点移动，客户端固定位置，
-    每轮把客户端分配给最近的 UAV（覆盖半径内）；超出半径且无
-    strict_coverage 时回退到最近 UAV。
-
-    模拟 UAV-assisted FL 中"边缘节点移动 → 客户端-边缘关联动态变化"。
-    """
-
-    def __init__(self, num_clients: int, num_edges: int,
-                 area_size: float = 1000.0, speed: float = 30.0,
-                 coverage_radius: float = 400.0,
-                 strict_coverage: bool = False, seed: int = 42):
-        self.num_clients = num_clients
-        self.num_edges = num_edges
-        self.area_size = area_size
-        self.speed = speed
-        self.coverage_radius = coverage_radius
-        self.strict_coverage = strict_coverage
-        self.seed = seed
-
-        rng = np.random.RandomState(seed)
-        # 客户端固定位置
-        self.client_pos = rng.uniform(0, area_size, size=(num_clients, 2))
-        # UAV 初始位置与随机路点目标
-        self.uav_pos = rng.uniform(0, area_size, size=(num_edges, 2))
-        self.uav_target = rng.uniform(0, area_size, size=(num_edges, 2))
-        self.uav_online = np.ones(num_edges, dtype=bool)
-
-    def _move_uavs(self, round_num: int):
-        """随机路点移动：朝目标移动 speed 米，到达后选新目标"""
-        for e in range(self.num_edges):
-            pos, tgt = self.uav_pos[e], self.uav_target[e]
-            dist = float(np.linalg.norm(tgt - pos))
-            if dist <= self.speed:
-                self.uav_pos[e] = tgt
-                rng = np.random.RandomState(self.seed * 100003 + round_num * 97 + e)
-                self.uav_target[e] = rng.uniform(0, self.area_size, size=2)
-            else:
-                direction = (tgt - pos) / dist
-                self.uav_pos[e] = pos + direction * self.speed
-
-    def assign(self, round_num: int) -> Dict[int, int]:
-        self._move_uavs(round_num)
-        mapping = {}
-        for cid in range(self.num_clients):
-            dists = np.linalg.norm(self.uav_pos - self.client_pos[cid], axis=1)
-            nearest = int(np.argmin(dists))
-            if self.strict_coverage and dists[nearest] > self.coverage_radius:
-                continue  # 无 UAV 覆盖，本轮不参与
-            mapping[cid] = nearest
-        return mapping
-
-    def coverage_stats(self, round_num: int) -> dict:
-        """返回最近 UAV 距离统计（用于实验记录）"""
-        dists = np.linalg.norm(
-            self.client_pos[:, None, :] - self.uav_pos[None, :, :], axis=2)
-        nearest = dists.min(axis=1)
-        covered = nearest <= self.coverage_radius
-        return {
-            "mean_dist": float(nearest.mean()),
-            "max_dist": float(nearest.max()),
-            "coverage_ratio": float(covered.mean()),
-        }
-
-
-# =====================================================================
 # 层次编排器
 # =====================================================================
 
@@ -255,30 +151,25 @@ class HierarchyController:
             raise ValueError(
                 f"hierarchy.num_edges({self.num_edges}) 不能超过客户端数({num_clients})")
 
-        # 关联策略
+        # 关联策略（实现位于 base/grouping.py，各轨道共享）
         assignment_name = hcfg.get('assignment', 'static')
-        if assignment_name == 'static':
-            self.assigner = StaticAssignment(num_clients, self.num_edges)
-        elif assignment_name == 'uav':
-            ucfg = hcfg.get('uav', {})
-            self.assigner = UAVAssignment(
-                num_clients, self.num_edges,
-                area_size=ucfg.get('area_size', 1000.0),
-                speed=ucfg.get('speed', 30.0),
-                coverage_radius=ucfg.get('coverage_radius', 400.0),
-                strict_coverage=ucfg.get('strict_coverage', False),
-                seed=ucfg.get('seed', 42))
-        else:
-            raise ValueError(f"未知关联策略: {assignment_name}")
+        self.assigner = create_assignment(config, num_clients, self.num_edges)
 
-        # 边缘节点：只发公钥上下文
+        # 边缘节点：只发公钥上下文。
+        # server_ckks_manager=None 的轨道（如 RFL：split learning 实体在协议内，
+        # 不经 CKKS 密文聚合）仅使用客户端-边缘关联分组，不创建密文边缘节点。
         poly_degree = config['ckks'].get('poly_modulus_degree', 8192)
-        public_bytes = server_ckks_manager.context.get_context_bytes()
         self.edges: Dict[int, EdgeNode] = {}
         mapping = self.assigner.edge_client_map(0, self.num_edges)
-        for eid, cids in mapping.items():
-            self.edges[eid] = EdgeNode(
-                eid, cids, public_bytes, config['ckks'], poly_degree)
+        if server_ckks_manager is not None:
+            public_bytes = server_ckks_manager.context.get_context_bytes()
+            for eid, cids in mapping.items():
+                self.edges[eid] = EdgeNode(
+                    eid, cids, public_bytes, config['ckks'], poly_degree)
+        else:
+            logger.info(
+                "HierarchyController: 无 CKKS 上下文（RFL/明文轨道），"
+                "仅提供客户端-边缘关联分组，不创建密文边缘节点")
 
         # 服务器侧全局掩码投票器（复用配置）
         gmv_cfg = config.get('global_mask_vote', {})
@@ -293,7 +184,7 @@ class HierarchyController:
         logger.info(
             f"HierarchyController: edges={self.num_edges} | "
             f"assignment={assignment_name} | edge_selection_rate={self.edge_selection_rate} | "
-            f"clients/edge={[self.edges[e].num_clients for e in sorted(self.edges)]}")
+            f"clients/edge={[len(mapping[e]) for e in sorted(mapping)]}")
 
     # -----------------------------------------------------------------
     # 阶段 0/1：边缘选择与客户端分组
@@ -316,7 +207,7 @@ class HierarchyController:
         返回 {edge_id: [client_id, ...]}，只包含被选中的客户端。
         """
         mapping = self.assigner.assign(round_num)
-        groups: Dict[int, List[int]] = {e: [] for e in self.edges}
+        groups: Dict[int, List[int]] = {e: [] for e in range(self.num_edges)}
         for cid in selected_client_ids:
             eid = mapping.get(cid)
             if eid is not None and eid in groups:
@@ -418,5 +309,7 @@ class HierarchyController:
         return {
             'num_edges': self.num_edges,
             'assignment': type(self.assigner).__name__,
-            'edge_clients': {e: self.edges[e].num_clients for e in sorted(self.edges)},
+            'edge_clients': {e: (self.edges[e].num_clients if e in self.edges
+                                 else None)
+                             for e in range(self.num_edges)},
         }

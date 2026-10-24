@@ -21,7 +21,7 @@ PTopk: Packed TopK with Error Feedback
 import numpy as np
 import torch
 from typing import Dict, List, Tuple, Optional, Any
-from ckks_fed.sparsification import SparsificationStrategy
+from ckks.sparsification import SparsificationStrategy
 
 
 class PTopkModule:

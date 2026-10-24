@@ -3,7 +3,7 @@
 提供多种替代 FedAvg 的聚合方法，用于抵御拜占庭攻击
 
 ⚠️ 实现已迁移至 baseline/ 包（明文鲁棒聚合基线），本模块仅做 re-export
-以保持向后兼容（ckks_fed.defenses.*_aggregate 的导入路径与行为不变），
+以保持向后兼容（ckks.defenses.*_aggregate 的导入路径与行为不变），
 不要在此新增实现。
 """
 

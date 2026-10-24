@@ -27,7 +27,7 @@ from ppbr.config import PPBRConfig
 from ppbr.controller import PPBRController
 from ppbr.crypto import PPBRKeyContext
 from ppbr.protocol import PPBRProtocol
-from ppbr.sa import SABucket, SAMember, shamir_recover, shamir_split
+from base.sa import SABucket, SAMember, shamir_recover, shamir_split
 
 __all__ = ['PPBRConfig', 'PPBRController', 'PPBRKeyContext', 'PPBRProtocol',
            'SABucket', 'SAMember', 'shamir_split', 'shamir_recover']

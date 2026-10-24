@@ -199,7 +199,7 @@ class TestToyCKKS:
 # =====================================================================
 class TestTTPEndToEnd:
     def test_split_recover_decrypt(self):
-        from ckks_fed.crypto import CKKSContext, CKKSManager
+        from ckks.crypto import CKKSContext, CKKSManager
 
         ckks_cfg = {'poly_modulus_degree': 4096,
                     'coeff_mod_bit_sizes': [40, 20, 40],
@@ -233,7 +233,7 @@ class TestTTPEndToEnd:
 
     def test_ceremony_ttp_stats(self):
         """ThresholdDecryptor（ttp）端到端：解密形状正确 + 统计字段齐全"""
-        from ckks_fed.crypto import CKKSContext, CKKSManager
+        from ckks.crypto import CKKSContext, CKKSManager
         from threshold import ThresholdDecryptor
 
         ckks_cfg = {'poly_modulus_degree': 4096,
@@ -264,7 +264,7 @@ class TestTTPEndToEnd:
 
     def test_ceremony_dkg_ideal(self):
         """ThresholdDecryptor（dkg）：理想解密 + 统计标 ideal=True"""
-        from ckks_fed.crypto import CKKSContext, CKKSManager
+        from ckks.crypto import CKKSContext, CKKSManager
         from threshold import ThresholdDecryptor
 
         ckks_cfg = {'poly_modulus_degree': 4096,

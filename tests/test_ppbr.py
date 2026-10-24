@@ -173,7 +173,7 @@ def test_ppbr_update_direction_matches_delta_semantics(tmp_path):
     """全局更新方向必须与 FedAvg 语义一致：Δw = +ζ·m_a（Δ 为参数变化量方向，
     对应论文 w ← w − ζ·m 的符号换算）。符号写反时模型朝损失增大方向移动。"""
     from main import CKKSFedExperiment
-    from ckks_fed.data import get_model_params
+    from base.data import get_model_params
     exp = CKKSFedExperiment(_write_cfg(tmp_path), output_dir=str(tmp_path))
     before = get_model_params(exp.server.model)
     captured = {}

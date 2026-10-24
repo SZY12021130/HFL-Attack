@@ -22,7 +22,7 @@ import torch
 
 
 def _setup_group(n=5, tag="e0", rnd=0, dim=300, seed=0):
-    from ppbr.sa import SABucket, SAMember, sa_threshold
+    from base.sa import SABucket, SAMember, sa_threshold
     rng = np.random.RandomState(seed)
     bucket = SABucket(tag, rnd, sa_threshold(n))
     members = {}
@@ -69,7 +69,7 @@ def _run_sa(bucket, members, inputs, dim, early=(), late=()):
 # =====================================================================
 
 def test_dh_seed_symmetry_and_context_binding():
-    from ppbr.sa import SAKeyPair
+    from base.sa import SAKeyPair
     a, b = SAKeyPair(), SAKeyPair()
     pa, pb = a.public_bytes(), b.public_bytes()
     s_ab = a.derive_seed(pb, "ppbr-sa-e0-0-1-3")
@@ -131,7 +131,7 @@ def test_self_mask_prevents_colluding_isolation():
     n=3：聚合方 + 2 个合谋客户端知道全部成对掩码与其自身输入。
     有自负载掩码 b 时，受害方输入不可恢复；去掉 b（对照）则可恢复。
     """
-    from ppbr.sa import prg_from_seed
+    from base.sa import prg_from_seed
     dim = 200
     bucket, members, inputs, dim = _setup_group(n=3, seed=4)
     victim, colluders = 0, [1, 2]
@@ -228,7 +228,7 @@ def test_protocol_sim_mode_still_works():
 
 
 def test_shamir_roundtrip_and_threshold():
-    from ppbr.sa import shamir_recover, shamir_split
+    from base.sa import shamir_recover, shamir_split
     rng = np.random.RandomState(0)
     secret = rng.bytes(15)
     shares = shamir_split(secret, n=5, t=3)
