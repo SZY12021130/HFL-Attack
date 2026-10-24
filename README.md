@@ -128,6 +128,16 @@ python main.py --config configs/config_athfhe_twin.yaml
 
 # AThFHE 方案一：分簇层次架构（内层升环 Q'>2·n_c·Q²·B'，支持 T1≠T2 异步掉线）
 python main.py --config configs/config_athfhe_hier.yaml
+
+# PPBR 拜占庭鲁棒防御（He 等 TMC 2026 论文复现；自动启用云-边-端架构）
+python main.py --config configs/config_ppbr_paper.yaml
+
+# PPBR × 攻击（5 个现成变体配置，malicious 客户端 spread 到各边缘）
+python main.py --config configs/config_ppbr_attack_alie.yaml
+python main.py --config configs/config_ppbr_attack_gaussian_noise.yaml
+python main.py --config configs/config_ppbr_attack_ipm.yaml
+python main.py --config configs/config_ppbr_attack_label_flipping.yaml
+python main.py --config configs/config_ppbr_attack_sign_flipping.yaml
 ```
 
 **消融实验三件套**（同密码学参数，逐层叠加通信优化，结果目录分别带
