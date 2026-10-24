@@ -101,51 +101,81 @@ pip install -r requirements.txt
 
 # 主实验: 单次联邦学习训练 (CKKS 加密 + TopK 稀疏化 + PTopk)
 python main.py
+```
 
-# 开启攻击: 编辑 configs/config.yaml 的 attack 段
-#   attack:
-#     enabled: true
-#     name: "model:sign_flipping"   # 注册表攻击名
-#     malicious_count: 2
-python main.py
+### 配置继承（extends）：一个实验一个小配置
 
-# 开启 PPBR 拜占庭鲁棒防御（自动启用云-边-端架构，可与攻击同时开启）
-#   ppbr:
-#     enabled: true
-python main.py
+实验配置支持 `extends` 继承（见 `base/config_loader.py`）：小配置只写**与默认配置
+的差异**，公共参数（数据集/模型/系统/带宽...）从 `configs/config.yaml` 继承，
+合并后的完整配置会自动落盘到结果目录。要跑什么实验就建一个几行的小文件，
+`configs/` 下已带现成示例：
 
-# 开启门限 CKKS 解密（CKKS 轨道；与 PPBR 互斥，客户端不再各自持完整 sk）
-#   threshold:
-#     enabled: true
-#     mode: "ttp"        # "ttp"=可信分发(doc §4) | "dkg"=分布式密钥生成(doc §5)
-#     t: 5                # 门限：任意 ≥t 个客户端协作才能解密
-#     combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
-python main.py
+```yaml
+# configs/my_experiment.yaml —— 只有这几行
+extends: config.yaml
+athfhe_twin:
+  enabled: true
+```
 
+```bash
 # RFL 鲁棒+可验证联邦学习（Zhou 等 TDSC 2026；恶意云威胁模型，不经 CKKS，
 # 自动启用云-边-端三层 split learning；cs_tamper/simulate_ifgia 演示可验证性）
-python main.py --config configs/config_rfl.yaml --output-dir results/test_rfl
+python main.py --config configs/config_rfl.yaml
 
-# AThFHE 两方案（USENIX Sec'25 ATASSES 扩展；外层 CKKS × 内层联合解密密钥消元；
-# athfhe_hier=分簇层次架构(内层升环), athfhe_twin=双服务器非共谋(种子掩码不升环)；
-# 两条轨道互斥、与 ppbr/rfl/threshold 互斥，配置段见 configs/config.yaml 末尾）
-#   athfhe_twin:
-#     enabled: true
-python main.py
+# AThFHE 方案二：双服务器非共谋架构（USENIX Sec'25 ATASSES 扩展；PRG 种子掩码
+# 不升环、单轮发完即走。与 ppbr/rfl/threshold 互斥）
+python main.py --config configs/config_athfhe_twin.yaml
+
+# AThFHE 方案一：分簇层次架构（内层升环 Q'>2·n_c·Q²·B'，支持 T1≠T2 异步掉线）
+python main.py --config configs/config_athfhe_hier.yaml
+```
+
+**消融实验三件套**（同密码学参数，逐层叠加通信优化，结果目录分别带
+`plain` / `ckks` / `ckks` 前缀 + 完整配置留档，直接可比）：
+
+```bash
+python main.py --config configs/config_plain_fedavg.yaml    # 基线：明文 FedAvg
+python main.py --config configs/config_ckks_fedavg.yaml     # +加密：裸 CKKS 聚合
+python main.py --config configs/config_ckks_efficient.yaml  # +通信优化：打包/TopK/补偿
+```
+
+其余轨道（PPBR / 门限 CKKS / 明文基线 / 攻击实验）同样继承 `config.yaml`，
+在自有小配置里写差异即可，例如：
+
+```yaml
+# PPBR 拜占庭鲁棒防御（自动启用云-边-端架构，可与攻击同时开启）
+extends: config.yaml
+ppbr:
+  enabled: true
+
+# 门限 CKKS 解密（CKKS 轨道；与 PPBR 互斥，客户端不再各自持完整 sk）
+extends: config.yaml
+threshold:
+  enabled: true
+  mode: "ttp"        # "ttp"=可信分发(doc §4) | "dkg"=分布式密钥生成(doc §5)
+  t: 5               # 门限：任意 ≥t 个客户端协作才能解密
+  combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
 
 # 明文鲁棒聚合基线（关加密 + 选 baseline/ 规则 + 可叠加攻击，见 baseline/README.md）
-#   encryption:
-#     enabled: false
-#   defense:
-#     aggregation_rule: "krum"   # fedavg/median/trimmed_mean/krum/multi_krum/
-#                                 # geometric_median/centered_clipping/dnc/dp_brem/rflba
+extends: config.yaml
+encryption:
+  enabled: false
+defense:
+  aggregation_rule: "krum"   # fedavg/median/trimmed_mean/krum/multi_krum/
+                              # geometric_median/centered_clipping/dnc/dp_brem/rflba
+attack:                        # 可选：叠加攻击
+  enabled: true
+  name: "model:sign_flipping"
+  malicious_count: 2
+```
+
+```bash
+# 主配置（无 extends 时默认读取 configs/config.yaml；也可直接编辑它跑实验）
 python main.py
+python main.py --config path/to/config.yaml
 
 # 隐私推断类攻击的离线评估 (成员推断 AUC / 梯度重建 PSNR 等)
 python -m hfl_attacks.runner --help
-
-# 使用其他配置文件
-python main.py --config path/to/config.yaml
 ```
 
 数据集（mnist / fashion_mnist / cifar10 等）首次运行会自动下载到 `data/` 目录。实验结果输出到配置中 `output.results_dir` 指定的目录（默认 `./results`）。

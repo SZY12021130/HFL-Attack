@@ -1,0 +1,19 @@
+# ============================================================================
+# 实验：通信高效 CKKS + FedAvg（打包 + 稀疏化 + 残差补偿 + 全局掩码投票）
+# ============================================================================
+# 与 configs/config.yaml 的默认预设等效（显式写出以便消融对照自文档化）。
+# 对照组：configs/config_ckks_fedavg.yaml（同密码学参数，效率特性全关）。
+#
+# 运行：python main.py --config configs/config_ckks_efficient.yaml
+
+extends: config.yaml
+
+ckks:
+  slot_packing: true                 # slot 打包（SIMD，大幅降低密文数量）
+  sparsification:
+    strategy: "topk"                 # 客户端本地包级 TopK 稀疏化
+  ptopk:
+    enable: true                     # Packed TopK 残差补偿（Error Feedback）
+
+global_mask_vote:
+  mode: "topk"                       # 服务器端全局掩码投票

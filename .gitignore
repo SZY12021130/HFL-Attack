@@ -36,3 +36,6 @@ Thumbs.db
 history_models/
 smoke_*.yaml
 configs/_*.yaml
+
+# 烟跑/临时实验输出
+results_smoke/

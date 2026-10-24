@@ -169,10 +169,12 @@ S_H 的视图只含种子与名单，无任何密文/份额（`test_twin_helper_
 `client_sampling_rate=1.0`。
 
 ```bash
-# 方案二（双服务器）
-python main.py --config <your_config_with_athfhe_twin_enabled>.yaml
+# 方案二（双服务器）/ 方案一（分簇层次）——现成实验配置（extends 继承
+# configs/config.yaml，只开启对应轨道；差异调项直接加在这两个小文件里）
+python main.py --config configs/config_athfhe_twin.yaml
+python main.py --config configs/config_athfhe_hier.yaml
 
-# 主配置 configs/config.yaml 末尾已带默认关闭的两段；最小可跑示例：
+# 两配置等价于在主配置末尾写（extends 机制见 base/config_loader.py）：
 #   athfhe_twin:
 #     enabled: true
 #     threshold: 3

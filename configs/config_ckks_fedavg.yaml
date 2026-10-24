@@ -1,0 +1,20 @@
+# ============================================================================
+# 实验：裸 CKKS + FedAvg（关闭全部通信效率特性）
+# ============================================================================
+# 消融对照的"最干净加密基线"：与 config_ckks_efficient.yaml 唯一的差异是
+# 效率开关——密码学参数（M/Q/scale）保持一致，使对比只反映通信优化收益。
+#   关闭：slot 打包 / 本地 TopK 稀疏化 / PTopk 残差补偿 / 全局掩码投票
+#
+# 运行：python main.py --config configs/config_ckks_fedavg.yaml
+
+extends: config.yaml
+
+ckks:
+  slot_packing: false                # 关 slot 打包（每个标量独立密文）
+  sparsification:
+    strategy: "none"                 # 关本地稀疏化（上传全量梯度）
+  ptopk:
+    enable: false                    # 关 PTopk 残差补偿
+
+global_mask_vote:
+  mode: "none"                       # 关全局掩码投票

@@ -27,7 +27,6 @@ exp.threshold_cfg 区分）。
 
 import os
 import json
-import shutil
 import logging
 from datetime import datetime
 from typing import Dict, List
@@ -47,6 +46,7 @@ from base.log_utils import (
 from base.models import create_model, print_model_summary
 from base.data import create_client_dataloaders, get_dataset_num_classes
 from base.metrics import MetricsCollector
+from base.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -209,9 +209,8 @@ class Experiment:
             bandwidth_simulator: 外部传入的 BandwidthSimulator 实例（用于对比实验共享带宽）
             output_dir: 自定义输出目录（覆盖配置文件中的 results_dir）
         """
-        # 加载配置
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+        # 加载配置（支持 extends 继承：实验配置只写差异，公共参数继承基础配置）
+        self.config = load_config(config_path)
 
         # 自动推断 num_classes，避免配置与数据集不匹配导致 CUDA assert
         dataset_name = self.config.get('data', {}).get('dataset', 'cifar10')
@@ -256,9 +255,11 @@ class Experiment:
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 保存配置文件副本，便于后续追踪和对比
+        # 保存配置副本（extends 实验保存合并后的完整配置），便于后续追踪和对比
         self.config_path = config_path
-        shutil.copy(config_path, os.path.join(self.output_dir, "config.yaml"))
+        with open(os.path.join(self.output_dir, "config.yaml"), 'w',
+                  encoding='utf-8') as f:
+            yaml.safe_dump(self.config, f, allow_unicode=True, sort_keys=False)
 
         # 配置实验日志文件（同时保留终端输出）
         self._setup_experiment_logger()

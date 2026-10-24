@@ -5,35 +5,27 @@
 # 三层 split learning + 中间表示 DP + 数字签名身份验证 + 同态哈希聚合校验），
 # 不经单密钥 CKKS。信任模型：云 CS 可半诚实/恶意，ES/EC 诚实。详见 doc/rfl.md。
 #
+# 本配置继承 configs/config.yaml（extends 机制，见 base/config_loader.py），
+# 只列出与默认配置的差异；合并后的完整配置会落盘到结果目录 config.yaml。
+#
 # 运行：python main.py --config configs/config_rfl.yaml --output-dir results/test_rfl
 # 演示：
 #   可验证性   → cs_tamper: "drop_edge" 或 "scale_edge"（式 17 校验失败，全体中止）
 #   IFGIA 防御 → simulate_ifgia: true（伪造客户端被式 9 验签拒绝）
 
+extends: config.yaml
+
 system:
-  num_clients: 20                    # 参与联邦学习的客户端总数
-  num_rounds: 10                     # 联邦学习总通信轮数
-  num_epochs: 1                      # 保留字段（RFL 轮用 rfl.local_epochs）
-  batch_size: 64                     # 本地训练批次大小
-  learning_rate: 0.001               # 保留字段（RFL 更新步长用 rfl.global_zeta）
+  num_clients: 20                    # RFL 演示规模（默认配置 50）
+  num_rounds: 10                     # RFL 演示轮数（默认配置 50）
   device: "cpu"                      # split learning 单进程仿真，CPU 足够
-  random_seed: 42
   client_sampling_rate: 1.0          # RFL 默认全采样（边缘分组需要稳定客户端集）
-  upload_difference: true            # 保留字段（RFL 轨道不使用）
   optimizer:
     name: "sgd"
     lr: 0.001
-  lr_scheduler:
-    enabled: false
-    name: "step"
-    step_size: 10
-    gamma: 0.5
-    T_max: 30
-    eta_min: 0.0
 
 data:
   dataset: "mnist"
-  data_dir: "./data"
   num_classes: 10
   iid: true                          # RFL 演示默认 IID（论文设置与 Non-IID 均可）
   alpha: 1
@@ -43,35 +35,30 @@ model:
   hidden_dims: [64, 32]              # 小维度加速同态哈希（HH 按维度数模幂）
   dropout: 0.2
 
-# RFL 不经单密钥 CKKS：关闭加密即跳过全部 CKKS 初始化（仅运行 RFL 一条轨道）
+# RFL 不经单密钥 CKKS：关闭加密即跳过全部 CKKS 初始化（仅运行 RFL 一条轨道）。
+# 以下 ckks 参数仅 hierarchy 初始化读取 poly_modulus_degree 等保留字段，
+# 保持原独立版配置的轻量值（默认配置是大模数 + TopK 稀疏化预设）。
 encryption:
   enabled: false
 
-defense:
-  aggregation_rule: "fedavg"         # 保留字段（RFL 聚合在协议内，式 15）
-  anomaly_filter: null
-  params: {}
-
-ckks:                                # 保留字段（hierarchy 初始化读取 poly_modulus_degree）
+ckks:
   poly_modulus_degree: 4096
   coeff_mod_bit_sizes: [40, 20, 40]
   global_scale: 1048576              # 2^20
-  slot_packing: true
-  packing:
-    strategy: "merged"
   sparsification:
     strategy: "none"
-    sparsity_rate: 0.1
-    batch_size: 4096
-    seed: 42
     scoring_method: "avg_abs"
   ptopk:
     enable: false
     client_residual:
       enabled: false
-      stale_gamma: 0.5
-      decay_gamma: 0.3
-      clip_tau: 0.0
+
+visualization:
+  enabled: false
+
+resume:
+  enabled: false
+  from: null
 
 global_mask_vote:
   mode: "none"
@@ -80,14 +67,6 @@ global_mask_vote:
 hierarchy:
   enabled: true
   num_edges: 3                       # 边缘服务器 ES 数量
-  assignment: "static"
-  edge_selection_rate: 1.0
-  uav:
-    area_size: 1000.0
-    speed: 30.0
-    coverage_radius: 400.0
-    strict_coverage: false
-    seed: 42
 
 attack:
   enabled: false                     # ⚠️ RFL 轨道不支持 hfl_attacks 注入（见 config.yaml 说明）
@@ -109,51 +88,3 @@ rfl:
   cs_tamper_scale: 1.5
   simulate_ifgia: false
   ifgia_per_edge: 1
-
-threshold:
-  enabled: false
-  mode: "ttp"
-  t: 5
-  combiner: "client"
-  smudging: true
-
-bandwidth:
-  base_dl_bw: 1024.0
-  base_ul_bw: 512.0
-  variance: 0.3
-  distribution: "lognormal"
-  filter_low_bandwidth: false
-  min_dl_bw_kbps: 5120
-  min_ul_bw_kbps: 5120
-  max_dl_bw_kbps: .inf
-  max_ul_bw_kbps: .inf
-
-metrics:
-  compute_time: true
-  communication_cost: true
-  ciphertext_size: true
-  expansion_ratio: true
-  accuracy: true
-  loss: true
-  communication_rounds: true
-  dropout_rate: true
-  cpu_utilization: true
-  key_distribution_cost: true
-  memory_usage: true
-
-visualization:
-  enabled: false
-  save_format: "png"
-  dpi: 300
-  figure_size: [10, 6]
-  style: "seaborn-v0_8-whitegrid"
-
-output:
-  results_dir: "./results"
-  model_dir: "./history_models"
-  viz_dir: "./visualization"
-  save_interval: 999
-
-resume:
-  enabled: false
-  from: null

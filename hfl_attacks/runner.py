@@ -53,8 +53,8 @@ from hfl_attacks import metrics as attack_metrics
 # =====================================================================
 
 def build_eval_config(args) -> Dict:
-    with open(args.config, 'r', encoding='utf-8') as f:
-        cfg = yaml.safe_load(f)
+    from base.config_loader import load_config
+    cfg = load_config(args.config)
     cfg['system']['num_clients'] = args.clients
     cfg['system']['num_rounds'] = args.rounds
     cfg['system']['device'] = args.device

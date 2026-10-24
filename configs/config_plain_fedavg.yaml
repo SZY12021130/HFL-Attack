@@ -1,0 +1,17 @@
+# ============================================================================
+# 实验：明文 FedAvg 基线（base 层，无加密无防御）
+# ============================================================================
+# 消融实验的起点：与加密组（config_ckks_fedavg.yaml / config_ckks_efficient.yaml）
+# 只相差加密层。鲁棒聚合规则默认 fedavg；要测防御（krum/median/...）改
+# defense.aggregation_rule 即可（见 baseline/README.md）。
+# 约束：明文模式与 ppbr/threshold 轨道互斥（它们都是密文轨道）。
+#
+# 运行：python main.py --config configs/config_plain_fedavg.yaml
+
+extends: config.yaml
+
+encryption:
+  enabled: false                     # 明文轨道：标准 FedAvg，无任何加密开销
+
+defense:
+  aggregation_rule: "fedavg"

@@ -1,0 +1,13 @@
+# ============================================================================
+# 实验：AThFHE 方案一（分簇层次架构）—— USENIX Sec'25 ATASSES 扩展
+# ============================================================================
+# 只写与默认配置的差异：公共参数（数据集/模型/系统/带宽...）全部继承
+# configs/config.yaml，此处仅开启 athfhe_hier 轨道。调参直接在本文件
+# 覆盖对应键即可（如 system.num_rounds、athfhe_hier.num_clusters）。
+#
+# 运行：python main.py --config configs/config_athfhe_hier.yaml
+
+extends: config.yaml
+
+athfhe_hier:
+  enabled: true

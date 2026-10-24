@@ -17,7 +17,6 @@ import faulthandler
 faulthandler.enable()
 
 import torch
-import yaml
 import argparse
 import logging
 
@@ -37,6 +36,7 @@ from base.log_utils import (
     safe_mean,
 )
 from base.data import get_dataset_num_classes
+from base.config_loader import load_config
 from base.experiment import Experiment
 
 # 副作用导入：注册方案轨道到 base.experiment.TRACKS。
@@ -82,8 +82,8 @@ def main():
     banner("CKKS-Fed: 基于CKKS同态加密的联邦学习框架", width=72)
     tag_info(LogTag.INIT, _get_device_info())
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        main_config = yaml.safe_load(f)
+    # 加载配置（支持 extends 继承，与 Experiment 同一解析器，保证预检一致）
+    main_config = load_config(args.config)
 
     # 自动推断 num_classes
     dataset_name = main_config.get('data', {}).get('dataset', 'cifar10')
