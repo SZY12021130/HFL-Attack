@@ -149,24 +149,32 @@ python main.py --config configs/config_ckks_fedavg.yaml     # +加密：裸 CKKS
 python main.py --config configs/config_ckks_efficient.yaml  # +通信优化：打包/TopK/补偿
 ```
 
-其余轨道（PPBR / 门限 CKKS / 明文基线 / 攻击实验）同样继承 `config.yaml`，
-在自有小配置里写差异即可，例如：
+其余轨道（PPBR / 门限 CKKS / 明文基线 / 攻击实验）同样继承 `config.yaml`。
+**每个示例都是一个独立的小配置文件**，新建对应文件粘贴即可（不要把多个
+示例合进一个文件——`extends` 键会重复）：
 
 ```yaml
-# PPBR 拜占庭鲁棒防御（自动启用云-边-端架构，可与攻击同时开启）
+# configs/config_ppbr_demo.yaml —— PPBR 拜占庭鲁棒防御
+# （自动启用云-边-端架构，可与攻击同时开启）
 extends: config.yaml
 ppbr:
   enabled: true
+```
 
-# 门限 CKKS 解密（CKKS 轨道；与 PPBR 互斥，客户端不再各自持完整 sk）
+```yaml
+# configs/config_threshold_demo.yaml —— 门限 CKKS 解密
+# （CKKS 轨道；与 PPBR 互斥，客户端不再各自持完整 sk）
 extends: config.yaml
 threshold:
   enabled: true
   mode: "ttp"        # "ttp"=可信分发(doc §4) | "dkg"=分布式密钥生成(doc §5)
   t: 5               # 门限：任意 ≥t 个客户端协作才能解密
   combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
+```
 
-# 明文鲁棒聚合基线（关加密 + 选 baseline/ 规则 + 可叠加攻击，见 baseline/README.md）
+```yaml
+# configs/config_plain_krum.yaml —— 明文鲁棒聚合基线
+# （关加密 + 选 baseline/ 规则 + 可叠加攻击，见 baseline/README.md）
 extends: config.yaml
 encryption:
   enabled: false
