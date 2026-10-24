@@ -62,7 +62,9 @@ def _flatten_update(update: dict):
     shapes = [(k, tuple(v.shape)) for k, v in update.items()]
     vec = torch.cat([v.detach().reshape(-1).float() for v in update.values()]) \
         if update else torch.zeros(0)
-    return vec.numpy().astype(np.float64), shapes
+    # .cpu() 不可省：device=cuda 时 vec 在 GPU 上，.numpy() 直接报
+    # "can't convert cuda:0 device type tensor to numpy"
+    return vec.cpu().numpy().astype(np.float64), shapes
 
 
 def _reshape_average(avg_vec: np.ndarray, shapes, ref_params: dict) -> dict:
