@@ -1,0 +1,38 @@
+%%==============================================================================
+%% Section II: Related Work
+%%==============================================================================
+\section{Related Work}
+\label{sec:related}
+
+We review five lines of research that meet the requirements of a UAV swarm: homomorphic-encryption-based FL, secure aggregation, hierarchical and UAV FL, distributed key generation, and verifiable FL against collusion.
+
+\textbf{Homomorphic-Encryption-Based FL.} HE permits computation directly on ciphertexts and therefore offers the strongest cryptographic guarantee for private aggregation. Single-key CKKS constructions such as FedSHE~\cite{pan2024fedshe} and FedPHE~\cite{li2025fedphe} exploit approximate arithmetic and ciphertext packing, but a globally shared key lets any key holder decrypt every update. Multi-key HE removes this exposure by allowing independent client keys: Chen et al.~\cite{chen2019efficient} introduced efficient packed multi-key encryption, and ESAFL~\cite{wu2025esafl} together with the construction of Wu et al.~\cite{wu2025secure} refine packing and one-step decryption for cross-silo settings. To relieve weak clients, FedOut~\cite{yuan2026fedout} and CDKS-LSS~\cite{wang2026cdks} outsource encryption to an intermediary and combine MKHE with secret sharing, while EVMKA~\cite{yang2026evmka} adds verifiable multi-key aggregation. These systems nevertheless retain a common limitation: the single-key schemes leave a holder able to decrypt, whereas the outsourcing systems rely on a key distribution center or a trusted authority and assume the intermediary is only semi-honest. None resists a malicious intermediary jointly with collusion, and the encryption cost is displaced rather than eliminated without a trust anchor.
+
+\textbf{Secure Aggregation.} Masking-based secure aggregation avoids the cost of HE. Bonawitz et al.~\cite{bonawitz2017practical} established the practical blueprint using pairwise masking with dropout recovery; LightSecAgg~\cite{so2022lightsecagg} and $\lambda$-SecAgg~\cite{ergun2025lambda} reduce per-client work through encoded and partially frozen masks, Flamingo~\cite{ma2023flamingo} supports multi-round single-server aggregation, and single-setup protocols~\cite{sultan2025single} provide forward and backward secrecy. TEE-aided systems such as SecFed~\cite{cai2023secfed} and Lancelot~\cite{jiang2024lancelot} provide hardware-rooted guarantees. These protocols remain vulnerable to adversarial server selection, which is only partially addressed by Lotto~\cite{jiang2024lotto}; more importantly, they authenticate the aggregate but do not bind a ciphertext to its underlying plaintext nor verify the decryption shares, and the TEE variants require hardware that is absent on small UAVs.
+
+\textbf{Hierarchical and UAV FL.} Hierarchical FL inserts an aggregation tier between clients and the cloud. Liu et al.~\cite{liu2020hierfavg} analyzed Client-Edge-Cloud hierarchical FL (HierFAVG), Wang et al.~\cite{wang2021rflha} introduced resource-efficient hierarchical aggregation, and heterogeneous frameworks that balance completion time and accuracy have been reported in~\cite{wang2026heterogeneous}; partial-error feedback~\cite{xin2026safe} and sporadic personalization~\cite{rahman2026tackling} further address heterogeneous clients. UAV-specific swarm frameworks and surveys examine collaborative training across fleets~\cite{nagarajan2025drone},~\cite{ahmed2025uav}. This line of work primarily targets convergence, latency, and energy, and it generally assumes the aggregation tier and cloud are honest; it does not address how MCU-class worker UAVs produce encrypted updates, how the aggregation key is generated without a trusted authority, or how a malicious cloud can be detected.
+
+\textbf{Distributed Key Generation.} Shamir secret sharing~\cite{shamir1979} underlies threshold cryptography, and Feldman verifiable secret sharing (VSS)~\cite{feldman1987} makes shares publicly checkable; Pedersen VSS~\cite{pedersen1991} adds information-theoretic privacy for the shared value, and Gennaro et al.~\cite{gennaro2007dkg} formalized secure DKG for discrete-log cryptosystems. These are general-purpose primitives over discrete-log groups that are not directly integrated with the RLWE-based encryption used for FL. Adopting them directly would additionally require weak worker UAVs to participate in key generation, which is infeasible; how to confine a DKG to the strong cluster-head tier and couple it to an RLWE aggregator remains unexplored.
+
+\textbf{Verifiable FL and Collusion Resistance.} Verifiable FL aims to detect a malicious server or corrupted clients. VeSAFL~\cite{bouamama2025vesafl} combines short signatures with a verifiable sharing scheme, and dual-verifiable FL~\cite{cui2026dualverifiable} uses vector commitments and a semi-trusted verification cluster against collusion. Byzantine-robust systems such as~\cite{dong2023privacy},~\cite{cao2024srfl}, and~\cite{jiang2024lancelot} tolerate model poisoning. VeSAFL verifies decryption without an inclusion proof, while the dual-verifiable design introduces a separate verification cluster that amounts to a new entity; the Byzantine-robust systems assume an honest server and therefore do not protect against a malicious cloud that forges the aggregate. To our knowledge, no existing framework simultaneously provides trust-anchor-free key generation, collusion-resistant outsourced encryption, and end-to-end three-layer verification within the fixed worker--cluster-head--cloud hierarchy, which is the gap that \textsc{VHD-FL} is designed to close. Table~\ref{tab:capability} summarizes the comparison.
+
+\begin{table*}[t]
+\centering
+\caption{Capability Comparison of VHD-FL with Representative Privacy-Preserving FL Schemes}
+\label{tab:capability}
+\scriptsize
+\setlength{\tabcolsep}{4.2pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+Scheme & TTP-free & No NTT & Collusion res. & Ver. enc. & Ver. agg. & Ver. dec. & Dropout \\
+\midrule
+FedOut~\cite{yuan2026fedout}    & \xmark & \cmark & \xmark & \xmark & \xmark & Partial & \xmark \\
+CDKS-LSS~\cite{wang2026cdks}    & \xmark & \cmark & Partial & \xmark & \xmark & \xmark & Partial \\
+ESAFL~\cite{wu2025esafl}        & \xmark & \xmark & \xmark & \xmark & \xmark & \xmark & \xmark \\
+FedPHE~\cite{li2025fedphe}      & \xmark & \xmark & \xmark & \xmark & \xmark & \xmark & Partial \\
+VeSAFL~\cite{bouamama2025vesafl}& \xmark & \cmark & Partial & \xmark & \cmark & \cmark & Partial \\
+\textbf{VHD-FL}                 & \cmark & \cmark & \cmark & \cmark & \cmark & \cmark & \cmark \\
+\bottomrule
+\end{tabular}
+\end{table*}

@@ -1,0 +1,10 @@
+%%==============================================================================
+%% Abstract and keywords
+%%==============================================================================
+\begin{abstract}
+Federated learning (FL) over hierarchical unmanned aerial vehicle (UAV) swarms allows collaborative model training across worker UAVs, cluster-head UAVs, and a cloud server without relocating raw sensing data. Securing this architecture, however, imposes a set of coupled constraints that existing protocols do not jointly resolve: MCU-class worker UAVs cannot afford the number-theoretic transform underlying homomorphic encryption, no trusted authority is available to issue a group key, and the cluster-heads and cloud are mutually untrusted, may collude, and may tamper with encrypted inputs, fabricate the aggregation, or submit erroneous decryption shares. We present \textsc{VHD-FL}, a verifiable hierarchical FL framework that reconciles these constraints without introducing a new trusted entity. A cluster-head-layer distributed key generation produces the group key with zero participation by worker UAVs and zero key shares held by the cloud. A three-blind outsourced encryption protocol reuses a neighboring cluster-head as the third mask holder, yielding a 3-out-of-3 additive secret sharing that tolerates collusion among any two mask holders. Three-layer verifiability---an encryption zero-knowledge proof, a homomorphic hash over the aggregation, and a decryption proof---detects tampering, forged aggregation, and incorrect partial decryption against a malicious cloud. Experiments on MNIST, CIFAR-10, and FEMNIST show that \textsc{VHD-FL} matches plaintext FedAvg accuracy while reducing per-round worker cost to a single modular subtraction and one EdDSA signature, and that it tolerates up to $\tau-1$ colluding cluster-heads and arbitrary worker dropouts.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated learning, unmanned aerial vehicles, distributed key generation, homomorphic encryption, verifiability, collusion resistance.
+\end{IEEEkeywords}

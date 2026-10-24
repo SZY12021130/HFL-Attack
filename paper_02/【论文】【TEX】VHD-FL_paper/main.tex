@@ -1,0 +1,215 @@
+%%==============================================================================
+%% VHD-FL: Verifiable Hierarchical Federated Learning with Distributed Key
+%% Generation for UAV Swarms
+%%
+%% IEEE Transactions double-column manuscript (10 pt, journal).
+%% Build:  latexmk -pdf main.tex
+%%   (or)  pdflatex main -> bibtex main -> pdflatex main -> pdflatex main
+%%
+%% Section files:
+%%   abstract.tex  introduction.tex  related_work.tex  preliminaries.tex
+%%   scheme.tex    algorithm_design.tex  security.tex  evaluation.tex
+%%   conclusion.tex
+%%
+%% Author photographs are kept in ./authors and figures (self-contained
+%% diagrams/plots) are generated inline with TikZ/pgfplots, so the project
+%% compiles without any external figure dependency.
+%%==============================================================================
+\documentclass[10pt,journal]{IEEEtran}
+
+%%------------------------------------------------------------------------------
+%% Core math
+%%------------------------------------------------------------------------------
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+
+%%------------------------------------------------------------------------------
+%% Graphics, colour, TikZ / pgfplots (self-contained figures)
+%%------------------------------------------------------------------------------
+\usepackage{graphicx}
+\graphicspath{{figures/}{authors/}}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,arrows.meta,positioning,calc,fit,backgrounds,%
+                patterns,decorations.pathreplacing,chains,matrix}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepgflibrary{shapes.geometric}
+
+%%------------------------------------------------------------------------------
+%% Tables
+%%------------------------------------------------------------------------------
+\usepackage{booktabs}
+\usepackage{colortbl}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+
+%%------------------------------------------------------------------------------
+%% References, lists, symbols
+%%------------------------------------------------------------------------------
+\usepackage{cite}
+\usepackage{enumitem}
+\usepackage{pifont}
+\newcommand{\cmark}{\ding{51}}
+\newcommand{\xmark}{\ding{55}}
+
+%%------------------------------------------------------------------------------
+%% Algorithms (algorithm2e, ruled)
+%%------------------------------------------------------------------------------
+\usepackage[ruled,linesnumbered,commentsnumbered]{algorithm2e}
+
+%%------------------------------------------------------------------------------
+%% Palette (muted, print-friendly)
+%%------------------------------------------------------------------------------
+\definecolor{WorkerBlue}{RGB}{60,110,170}
+\definecolor{HeadTeal}{RGB}{40,135,120}
+\definecolor{ServerRed}{RGB}{185,75,70}
+\definecolor{CommentBlue}{RGB}{0,80,160}
+\definecolor{MaskGreen}{RGB}{50,135,85}
+\definecolor{CipherPurple}{RGB}{110,80,150}
+\definecolor{HashGold}{RGB}{180,140,45}
+\definecolor{LightGray}{RGB}{245,245,245}
+
+%%------------------------------------------------------------------------------
+%% Algorithm2e style
+%%------------------------------------------------------------------------------
+\newcommand{\cmtfont}{\footnotesize\color{CommentBlue}}
+\newcommand{\cmtmarker}{$\triangleright$~}
+\SetCommentSty{cmtfont}
+\SetKwComment{tcp}{\cmtmarker}{}
+\SetKwComment{tcc}{\cmtmarker}{}
+\SetKwInput{KwInput}{Input}
+\SetKwInput{KwOutput}{Output}
+\SetKwInput{KwParam}{Parameter}
+\DontPrintSemicolon
+\SetAlgoNlRelativeSize{0}
+
+%%------------------------------------------------------------------------------
+%% Theorem-like environments
+%%------------------------------------------------------------------------------
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{remark}{Remark}
+
+%%------------------------------------------------------------------------------
+%% Unified mathematical notation
+%%   (every symbol is also defined in the Notation Table, preliminaries.tex)
+%%------------------------------------------------------------------------------
+% Number systems / rings
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Rq}{\mathcal{R}_q}
+\newcommand{\Rp}{\mathcal{R}_p}
+\newcommand{\Rring}{\mathcal{R}}
+\newcommand{\U}{\mathcal{U}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+% Cryptographic primitives
+\DeclareMathOperator{\Enc}{Enc}
+\DeclareMathOperator{\Dec}{Dec}
+\DeclareMathOperator{\Eval}{Eval}
+\DeclareMathOperator{\Sign}{Sign}
+\DeclareMathOperator{\Verify}{Verify}
+\DeclareMathOperator{\KeyGen}{KeyGen}
+\DeclareMathOperator{\HH}{HH}          % homomorphic hash
+\newcommand{\negl}{\operatorname{negl}}
+
+% Ciphertext / message shorthand
+\newcommand{\ct}{\mathsf{ct}}
+\newcommand{\sk}{\mathsf{sk}}
+\newcommand{\vk}{\mathsf{vk}}
+\newcommand{\pk}{\mathsf{pk}}
+\newcommand{\bbar}{\bar{b}}
+\newcommand{\ebar}{\bar{e}}
+\newcommand{\mglob}{M}
+\newcommand{\Share}[1]{[s]_{#1}}       % threshold share of group secret
+
+% Small helpers
+\newcommand{\qedblack}{\hfill$\blacksquare$}
+\newcommand{\round}{\ell}               % communication round index
+\newcommand{\thr}{\tau}                 % threshold
+
+%% hyperref must be loaded last
+\usepackage[colorlinks=false,pdfborder={0 0 0}]{hyperref}
+
+%%==============================================================================
+\begin{document}
+%%==============================================================================
+
+\title{VHD-FL: Verifiable Hierarchical Federated Learning with Distributed Key Generation for UAV Swarms}
+
+\author{
+    Zhongyang~Shi,
+    Hong~Zhong,
+    Qingyang~Zhang,
+    Ke~Cheng,
+    Fengqun~Wang,
+    and~Jie~Cui
+    \IEEEcompsocitemizethanks{
+        \IEEEcompsocthanksitem Z. Shi, H. Zhong, Q. Zhang, F. Wang, and J. Cui are with the Key Laboratory of Intelligent Computing and Signal Processing of the Ministry of Education, School of Computer Science and Technology, Anhui University, Hefei 230039, China, and also with the Anhui Engineering Laboratory of IoT Security Technologies, Anhui University, Hefei 230039, China (e-mail: zhongh@ahu.edu.cn; cuijie@mail.ustc.edu.cn). (Corresponding author: Hong Zhong.)
+        \IEEEcompsocthanksitem K. Cheng is with the School of Computer Science and Technology, Xidian University, Xi'an 710126, China, and also with the Shaanxi Key Laboratory of Network and System Security, Xi'an 710071, China (e-mail: chengke@xidian.edu.cn).
+    }
+}
+
+\maketitle
+
+%%---- Front matter -----------------------------------------------------------
+\input{abstract}
+\input{introduction}
+\input{related_work}
+
+%%---- Preliminaries ----------------------------------------------------------
+\input{preliminaries}
+
+%%---- Design -----------------------------------------------------------------
+\input{scheme}
+\input{algorithm_design}
+
+%%---- Analysis and evaluation ------------------------------------------------
+\input{security}
+\input{evaluation}
+
+%%---- Conclusion -------------------------------------------------------------
+\input{conclusion}
+
+%%---- References -------------------------------------------------------------
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+%%---- Author biographies -----------------------------------------------------
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{szy.png}}]
+{Zhongyang Shi} received the master's degree in computer science and technology from Shanghai Ocean University, China, in 2024. He is currently pursuing the Ph.D. degree with the School of Computer Science and Technology, Anhui University, Hefei, China. His research interests include privacy-preserving machine learning, federated learning, and homomorphic encryption.
+\end{IEEEbiography}
+
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{hz.png}}]
+{Hong Zhong} received the Ph.D. degree in computer science from the University of Science and Technology of China in 2005. She is currently a Professor and a Ph.D. supervisor with the School of Computer Science and Technology, Anhui University. Her research interests include applied cryptography, IoT security, vehicular ad hoc networks, and cloud computing security. She has published over 200 papers in reputable journals and conferences, including IEEE JSAC, IEEE TPDS, and IEEE TDSC.
+\end{IEEEbiography}
+
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{qyz.png}}]
+{Qingyang Zhang} received the B.Eng. and Ph.D. degrees in computer science from Anhui University in 2021. He is currently an Associate Professor with the School of Computer Science and Technology, Anhui University. His research interests include edge computing, computer systems, and security. He has published over 30 papers in venues including the Proceedings of the IEEE and IEEE TDSC.
+\end{IEEEbiography}
+
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{ck.png}}]
+{Ke Cheng} received the Ph.D. degree in computer science and technology from Xidian University, Xi'an, China, in 2022. He is currently an Associate Professor with the School of Computer Science and Technology, Xidian University. His research interests include data security and privacy protection.
+\end{IEEEbiography}
+
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{fqw.png}}]
+{Fengqun Wang} received the Ph.D. degree in computer science from Anhui University in 2024. He is currently a Lecturer with the School of Computer Science and Technology, Anhui University. His research interests include IoT security, blockchain, and applied cryptography. He has published in venues including IEEE TIFS and IEEE TDSC.
+\end{IEEEbiography}
+
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{jc.png}}]
+{Jie Cui}(Senior Member, IEEE) received the Ph.D. degree from the University of Science and Technology of China in 2012. He is currently a Professor and a Ph.D. supervisor with the School of Computer Science and Technology, Anhui University. His research interests include applied cryptography, IoT security, and cloud computing security. He has published over 150 papers in venues including IEEE TDSC, IEEE TIFS, and IEEE JSAC.
+\end{IEEEbiography}
+
+\vfill
+\end{document}

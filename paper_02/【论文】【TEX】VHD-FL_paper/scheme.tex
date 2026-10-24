@@ -1,0 +1,207 @@
+%%==============================================================================
+%% Section IV: Scheme Design
+%%==============================================================================
+\section{The VHD-FL Scheme}
+\label{sec:scheme}
+
+\subsection{Overview}
+\label{subsec:overview}
+\textsc{VHD-FL} operates in five phases over the three-tier hierarchy. Phase~0 lets the cluster-heads jointly generate the group key and distribute threshold shares. Phase~1 has each worker blind its update and spread three mask shares. In Phases~2 and~3, the own head, the cloud, and the neighbor head encrypt and progressively remove the masks while aggregating. Phase~4 performs threshold decryption and three-layer verification. Fig.~\ref{fig:masks} depicts the three-blind mask flow for one worker, and Fig.~\ref{fig:sequence} gives the full message sequence.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[font=\tiny,
+    wbox/.style={rectangle,rounded corners=2pt,fill=WorkerBlue!15,draw=WorkerBlue,
+                 minimum width=30mm,minimum height=6mm},
+    hbox/.style={rectangle,rounded corners=2pt,fill=HeadTeal!12,draw=HeadTeal,
+                 minimum width=26mm,minimum height=8mm,align=center},
+    sbox/.style={rectangle,rounded corners=2pt,fill=ServerRed!12,draw=ServerRed,
+                 minimum width=26mm,minimum height=8mm,align=center},
+    arr/.style={-{Latex[length=1.5mm]},line width=0.35mm},
+    vbox/.style={rectangle,rounded corners=2pt,fill=LightGray,draw=black!60,
+                 minimum height=7mm,align=center}]
+    \node[wbox] (W) at (0,0) {\scriptsize Worker UAV $i$};
+    \node[hbox] (C)  at (-28mm,-21mm) {\scriptsize Own CH $c$};
+    \node[sbox] (S)  at (0,-21mm) {\scriptsize Cloud $S$};
+    \node[hbox] (Cp) at (28mm,-21mm) {\scriptsize Neighbor CH $c'$};
+    \draw[arr,color=HeadTeal]   (W.south) -- (C.north)
+       node[midway,left,font=\tiny]{$m_i',r_i^{(c)},\sigma_i$};
+    \draw[arr,color=ServerRed]  (W.south) -- (S.north)
+       node[midway,right,font=\tiny]{$r_i^{(s)},h_i$};
+    \draw[arr,color=HeadTeal]   (W.south) -- (Cp.north)
+       node[midway,right,font=\tiny]{$r_i^{(c')}$};
+    \node[vbox,minimum width=78mm] (V) at (0,-34mm) {\scriptsize
+       \textbf{Three-layer verification:} $\pi_i^{\mathrm{enc}}$ (encryption)
+       $\;\vert\; H(\cdot)$ (aggregation) $\;\vert\; \pi_c$ (decryption)};
+    \draw[gray!50,dashed] (C.south) -- (V.north);
+    \draw[gray!50,dashed] (S.south) -- (V.north);
+    \draw[gray!50,dashed] (Cp.south) -- (V.north);
+  \end{tikzpicture}
+  \caption{Three-blind mask flow for one worker; the three mask shares feed the verification.}
+  \label{fig:masks}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \begin{tikzpicture}[font=\tiny,
+    head/.style={rectangle,rounded corners=2pt,minimum width=22mm,minimum height=6mm,
+                 inner sep=1pt,draw},
+    arr/.style={-{Latex[length=1.6mm]},line width=0.35mm,gray!80},
+    note/.style={rectangle,rounded corners=1pt,fill=LightGray,draw=black!55,
+                 inner sep=1.5pt,align=left},
+    life/.style={gray!55,dashed,line width=0.3mm},
+    ptag/.style={font=\tiny\bfseries,text=black!80}]
+    % Lifelines
+    \node[head,fill=WorkerBlue!15,draw=WorkerBlue] (W)  at (-60mm,0) {\scriptsize Worker $i$};
+    \node[head,fill=HeadTeal!12,draw=HeadTeal]     (C)  at (-20mm,0) {\scriptsize Own CH $c$};
+    \node[head,fill=HeadTeal!12,draw=HeadTeal]     (Cp) at (20mm,0)  {\scriptsize Neighbor CH $c'$};
+    \node[head,fill=ServerRed!12,draw=ServerRed]   (S)  at (60mm,0)  {\scriptsize Cloud $S$};
+    \coordinate (Wb) at ($(W.south)$);  \coordinate (Cb) at ($(C.south)$);
+    \coordinate (Cpb) at ($(Cp.south)$);\coordinate (Sb) at ($(S.south)$);
+    \foreach \n in {Wb,Cb,Cpb,Sb}{
+      \draw[life] (\n) -- ++(0,-92mm);
+    }
+    % Phase tags (left)
+    \node[ptag,anchor=east] at (-74mm,-6mm)  {P0};
+    \node[ptag,anchor=east] at (-74mm,-24mm) {P1};
+    \node[ptag,anchor=east] at (-74mm,-50mm) {P2--3};
+    \node[ptag,anchor=east] at (-74mm,-78mm) {P4};
+    % Phase 0 note
+    \node[note,anchor=north,minimum width=84mm] at (20mm,-5mm)
+       {\scriptsize Cluster-head DKG: $s=\sum_c s_c$, $\bar b=-as+\bar e$,
+        $(\tau,M)$ shares $\{[s]_c\}$; workers/cloud hold no share};
+    % Phase 1 (worker self + three deliveries)
+    \node[note,anchor=west] at ($(Wb)+(0,-19mm)$)
+       {\scriptsize train $m_i$; sample masks;\\ $m_i'=m_i-r_i$; $h_i$; $\sigma_i$};
+    \draw[arr] ($(Wb)+(0,-26mm)$) -- ($(Cb)+(0,-26mm)$)
+       node[midway,above,font=\tiny]{$m_i',r_i^{(c)},\sigma_i$};
+    \draw[arr] ($(Wb)+(0,-32mm)$) -- ($(Sb)+(0,-32mm)$)
+       node[midway,above,font=\tiny]{$r_i^{(s)},h_i$};
+    \draw[arr] ($(Wb)+(0,-38mm)$) -- ($(Cpb)+(0,-38mm)$)
+       node[midway,above,font=\tiny]{$r_i^{(c')}$};
+    % Phase 2 (own head encrypt/aggregate; deliver to cloud)
+    \node[note,anchor=west] at ($(Cb)+(0,-44mm)$)
+       {\scriptsize $\Enc_{\bar b}(m_i')$; $\pi_i^{\mathrm{enc}}$;\\ cluster aggregate; unblind $r_i^{(c)}$};
+    \draw[arr] ($(Cb)+(0,-53mm)$) -- ($(Sb)+(0,-53mm)$)
+       node[midway,above,font=\tiny]{$ct^{(c)},\pi_i^{\mathrm{enc}}$};
+    % Phase 3 (neighbor unblind; cloud aggregate)
+    \draw[arr] ($(Cpb)+(0,-60mm)$) -- ($(Sb)+(0,-60mm)$)
+       node[midway,above,font=\tiny]{add $r_i^{(c')}$};
+    \node[note,anchor=west] at ($(Sb)+(0,-66mm)$)
+       {\scriptsize add $r_i^{(s)}$;\\ global aggregate $ct_{\mathrm{glob}}$};
+    % Phase 4 (broadcast, partial decryption, reconstruct, verify, downlink)
+    \draw[arr] ($(Sb)+(0,-74mm)$) -- ($(Cb)+(0,-74mm)$)
+       node[midway,above,font=\tiny]{broadcast $C_1$};
+    \draw[arr] ($(Cb)+(0,-80mm)$) -- ($(Sb)+(0,-80mm)$)
+       node[midway,above,font=\tiny]{$D_c,\pi_c$};
+    \node[note,anchor=west] at ($(Sb)+(0,-86mm)$)
+       {\scriptsize interpolate $\tau$ shares;\\ verify $H(M)=\sum_i h_i$; downlink $M$};
+  \end{tikzpicture}
+  \caption{Message sequence of \textsc{VHD-FL} across the four parties for phases P0--P4. Dashed vertical lines are party lifelines; masks are delivered over independent channels, and the protocol ends with the public hash verification before the aggregate is released.}
+  \label{fig:sequence}
+\end{figure*}
+
+\subsection{Phase 0: Cluster-Head DKG}
+\label{subsec:phase0}
+For a public polynomial $a\in\mathcal{R}_q$, each head $c$ samples $s_c\leftarrow\chi_s$ and $e_c\leftarrow\chi_e$, and publishes
+\begin{equation}
+  b_c=[-a s_c+e_c]_q .
+\end{equation}
+Aggregating the public components yields the group public key
+\begin{equation}
+  \label{eq:group-pk}
+  \bar b=\sum_{c=1}^{M} b_c=[-a s+\bar e]_q ,
+\end{equation}
+where $s=\sum_c s_c$ and $\bar e=\sum_c e_c$. The heads then execute a Feldman VSS over the group secret: each head $c$ receives a threshold share $\Share c$ and the corresponding share public key
+\begin{equation}
+  pk_c^*=[-a\Share c+e_c^*]_q .
+\end{equation}
+The resulting structure is a $( \tau, M)$ sharing of $s$. By construction, worker UAVs contribute nothing to key generation and the cloud holds no share, so the cloud alone cannot decrypt, while the weakest devices are not burdened with key material.
+
+\subsection{Phase 1: Worker Blinding and Mask Distribution}
+\label{subsec:phase1}
+Worker $i\in G_c$ trains locally to obtain $m_i$ and samples three independent mask shares $r_i^{(c)},r_i^{(s)},r_i^{(c')}\leftarrow\mathcal{U}(\mathcal{R}_q)$. Defining $r_i=r_i^{(c)}+r_i^{(s)}+r_i^{(c')}$, it computes the blinded update
+\begin{equation}
+  \label{eq:blinding}
+  m_i'=[m_i-r_i]_q ,
+\end{equation}
+the homomorphic hash $h_i=H(m_i)$ of Eq.~\eqref{eq:homhash}, and an EdDSA signature $\sigma_i=\Sign_{sk_i^{\mathrm{sig}}}(m_i'\Vert\ell)$. The messages are distributed as
+\begin{equation}
+  \label{eq:distribution}
+  \begin{aligned}
+    &(m_i',r_i^{(c)},\sigma_i)\to \text{own head }c,\\
+    &(r_i^{(s)},h_i)\to \text{cloud }S,\\
+    &r_i^{(c')}\to \text{neighbor head }c'.
+  \end{aligned}
+\end{equation}
+The three mask shares are sent over independent secure channels, so no single carrier sees more than one share.
+
+\subsection{Phase 2: Outsourced Encryption and Cluster Aggregation}
+\label{subsec:phase2}
+The own head $c$ encrypts the blinded update under the group public key with a per-worker randomizer $v_i\leftarrow\chi_s$ and attaches an encryption NIZK:
+\begin{equation}
+  \label{eq:individual-ct}
+  ct_i'=(v_i\bar b+m_i'+e_{i,0},\; v_i a+e_{i,1}),
+\end{equation}
+where $\pi_i^{\mathrm{enc}}$ proves knowledge of a blinded plaintext satisfying
+\begin{equation}
+  \pi_i^{\mathrm{enc}}:\quad \exists m_i',\ H(m_i')=\hat h_i\ \wedge\ ct_i'=\Enc_{\bar b}(m_i'),
+\end{equation}
+and the proof binds the signed value $\sigma_i$, so the ciphertext is exactly the blinded update the worker signed. The head then aggregates within the cluster and removes its own mask by adding $r_i^{(c)}$:
+\begin{equation}
+  \label{eq:cluster-ct}
+  ct^{(c)}=\Big(\sum_{i\in G_c} c_{i,0}'+\sum_{i\in G_c} r_i^{(c)},\; \sum_{i\in G_c} c_{i,1}'\Big).
+\end{equation}
+Substituting Eq.~\eqref{eq:blinding} into the first component gives the equivalent form
+\begin{equation}
+  \label{eq:cluster-expanded}
+  ct^{(c)}=\Big(\sum_{i\in G_c}\big(v_i\bar b+m_i-r_i^{(s)}-r_i^{(c')}+e_{i,0}\big),\; \sum_{i\in G_c}(v_i a+e_{i,1})\Big).
+\end{equation}
+At this point the cluster ciphertext still carries the two masks held by the cloud and the neighbor head, but it no longer carries the own head's mask.
+
+\subsection{Phase 3: Completion of Unblinding and Global Aggregation}
+\label{subsec:phase3}
+The cloud adds its share $r_i^{(s)}$ and the neighbor head adds $r_i^{(c')}$, both as plaintext additions. Combining the $M$ cluster ciphertexts yields the global ciphertext
+\begin{equation}
+  \label{eq:global-ct}
+  ct_{\mathrm{glob}}=\Big(\sum_c C_0^{(c)}+\sum_i r_i^{(s)}+\sum_i r_i^{(c')},\; \sum_c C_1^{(c)}\Big).
+\end{equation}
+Using Eq.~\eqref{eq:cluster-expanded}, the first component reduces to
+\begin{equation}
+  \label{eq:global-expanded}
+  ct_{\mathrm{glob}}=\Big(\sum_i\big(v_i\bar b+m_i+e_{i,0}\big),\; \sum_i\big(v_i a+e_{i,1}\big)\Big).
+\end{equation}
+All three masks have now been added back, yet the ciphertext hides the individual updates under the group key.
+
+\subsection{Phase 4: Threshold Decryption and Verification}
+\label{subsec:phase4}
+The cloud broadcasts the global second component $C_1=\sum_i(v_i a+e_{i,1})$. Each head $c$ computes a partial decryption and a decryption NIZK:
+\begin{equation}
+  \label{eq:partial-dec}
+  D_c=[C_1\Share c+e_c^*]_q ,\qquad \pi_c .
+\end{equation}
+The proof $\pi_c$ establishes that $\Share c$ is consistent with the public share key $pk_c^*$. The cloud gathers a set $T$ of $\tau$ valid partial decryptions and reconstructs the aggregate
+\begin{equation}
+  \label{eq:reconstruct}
+  \mglob\approx C_0+\sum_{c\in T}\lambda_c D_c ,
+\end{equation}
+where $\lambda_c$ are the Lagrange coefficients for the $(\tau,M)$ reconstruction. The released aggregate is accepted only if the public hash test passes:
+\begin{equation}
+  \label{eq:hash-test}
+  H(\mglob)\stackrel{?}{=}\sum_{i=1}^{N} h_i .
+\end{equation}
+
+\subsection{Correctness}
+\label{subsec:correctness}
+Substituting the first component of Eq.~\eqref{eq:global-expanded} and the threshold identity $\sum_{c\in T}\lambda_c\Share c=s$ into Eq.~\eqref{eq:reconstruct} gives
+\begin{equation}
+  \label{eq:correctness}
+  \begin{aligned}
+  C_0+\sum_{c\in T}\lambda_c D_c
+  &=\sum_i\big(v_i\bar b+m_i+e_{i,0}\big)+C_1 s+\text{noise}\\
+  &=\sum_i m_i+\sum_i v_i\bar e+\sum_i e_{i,1}s+\sum_i e_{i,0}\\
+  &\qquad+\sum_{c\in T}\lambda_c e_c^*\\
+  &\approx \sum_i m_i=\mglob .
+  \end{aligned}
+\end{equation}
+Three identities make the decryption exact up to approximation noise. First, the three mask shares cancel in aggregate because $r_i^{(c)}+r_i^{(s)}+r_i^{(c')}=r_i$. Second, the $\pm(\sum_i v_i)as$ term cancels because $\bar b=-as+\bar e$ while $C_1s$ contributes $+(\sum_i v_i)as$, leaving only $\sum_i v_i\bar e$. Third, the linearity of the hash gives $H(\mglob)=\sum_i H(m_i)=\sum_i h_i$, which holds exactly when the aggregation and decryption are honest. Hence the global ciphertext decrypts to the correct plaintext aggregate, and the hash test detects any deviation.

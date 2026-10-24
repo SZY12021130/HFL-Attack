@@ -1,0 +1,78 @@
+%%==============================================================================
+%% Section V: Algorithm Design (at most three algorithms)
+%%==============================================================================
+\section{Algorithm Design}
+\label{sec:algorithms}
+
+This section consolidates the scheme into three procedures: the end-to-end coordination performed by the cloud (Algorithm~\ref{alg:main}), the worker blinding and cluster-head outsourced encryption (Algorithm~\ref{alg:outenc}), and the threshold decryption with public verification (Algorithm~\ref{alg:thrdec}). All worker-side lines avoid number-theoretic transforms.
+
+\begin{algorithm}[t]
+\caption{\textsc{VHD-FL} Main Procedure}
+\label{alg:main}
+\KwInput{Workers $\{i\}_{1}^{N}$, cluster-heads $\{c\}_{1}^{M}$, threshold $\tau$, rounds $T$}
+\KwOutput{Trained global model $w_T$}
+\BlankLine
+\textbf{Phase 0 -- DKG (one-time)};\\
+\ForEach{cluster-head $c$}{
+  sample $s_c\leftarrow\chi_s$, $e_c\leftarrow\chi_e$; publish $b_c\gets -as_c+e_c$;\\
+  run Feldman VSS; store $\Share c$, $pk_c^*$;
+}
+$\bar b\gets\sum_c b_c$; \tcp{group public key; no worker/cloud share}
+\BlankLine
+\For{$\ell=1$ to $T$}{
+  broadcast the current model $w_{\ell-1}$;\\
+  \ForEach{cluster $c$}{
+    $(ct^{(c)},\{\pi_i^{\mathrm{enc}}\})\gets$ \textsc{ClusterHeadOutEnc}($c$);
+    \tcp*{Algorithm~\ref{alg:outenc}}
+  }
+  add $\sum_i r_i^{(s)}$; collect $\sum_i r_i^{(c')}$ from neighbor heads;\\
+  form $ct_{\mathrm{glob}}$ by Eq.~\eqref{eq:global-ct};\\
+  $(\mglob_\ell,\mathsf{ok})\gets$ \textsc{ThrDecVerify}($ct_{\mathrm{glob}}$);
+  \tcp*{Algorithm~\ref{alg:thrdec}}
+  \lIf{$\mathsf{ok}=0$}{\textbf{abort} the round}
+  $w_\ell\gets w_{\ell-1}-\eta\mglob_\ell$;
+}
+\Return $w_T$;
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Cluster-Head Outsourced Encryption and Aggregation}
+\label{alg:outenc}
+\KwInput{Cluster $c$, workers $G_c$, group public key $\bar b$}
+\KwOutput{Cluster ciphertext $ct^{(c)}$, proofs $\{\pi_i^{\mathrm{enc}}\}$}
+\BlankLine
+\ForEach{worker $i\in G_c$}{
+  \tcp{worker-side (no NTT)}
+  train $m_i$; sample $r_i^{(c)},r_i^{(s)},r_i^{(c')}$; $r_i\gets\sum r_i^{(\cdot)}$;\\
+  $m_i'\gets m_i-r_i$; $h_i\gets H(m_i)$; $\sigma_i\gets\Sign(m_i'\Vert\ell)$;\\
+  send $(m_i',r_i^{(c)},\sigma_i)$ to head $c$, $(r_i^{(s)},h_i)$ to $S$, $r_i^{(c')}$ to $c'$;
+}
+\ForEach{worker $i\in G_c$}{
+  \tcp{head-side}
+  \lIf{$\Verify(vk_i^{\mathrm{sig}},\sigma_i,m_i')\neq 1$}{\textbf{reject}}
+  draw $v_i$; compute $ct_i'$ by Eq.~\eqref{eq:individual-ct};\\
+  prove $\pi_i^{\mathrm{enc}}$ that $ct_i'=\Enc_{\bar b}(m_i')$;
+}
+\Return $ct^{(c)}$ (Eq.~\eqref{eq:cluster-ct}), $\{\pi_i^{\mathrm{enc}}\}$;
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Threshold Decryption and Verification}
+\label{alg:thrdec}
+\KwInput{Global ciphertext $ct_{\mathrm{glob}}=(C_0,C_1)$, heads, threshold $\tau$}
+\KwOutput{Aggregate $\mglob$ and acceptance bit $\mathsf{ok}$}
+\BlankLine
+broadcast $C_1$;\\
+\ForEach{head $c$}{
+  $D_c\gets C_1\Share c+e_c^*$; prove $\pi_c$; send $(D_c,\pi_c)$;
+}
+$T\gets\emptyset$;\\
+\ForEach{received $(D_c,\pi_c)$}{
+  \lIf{$\pi_c$ verifies against $pk_c^*$}{$T\gets T\cup\{c\}$}
+  \lIf{$|T|=\tau$}{\textbf{break}}
+}
+\lIf{$|T|<\tau$}{\Return $(\bot,0)$}
+$\mglob\gets C_0+\sum_{c\in T}\lambda_c D_c$;\\
+\lIf{$H(\mglob)=\sum_i h_i$}{\Return $(\mglob,1)$}
+\Return $(\bot,0)$;
+\end{algorithm}

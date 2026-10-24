@@ -1,0 +1,55 @@
+%%==============================================================================
+%% Section VI: Security Analysis
+%%==============================================================================
+\section{Security Analysis}
+\label{sec:security}
+
+We formalize the goals of Section~\ref{subsec:threat} and prove the four properties. We say that an update is \emph{private} if the view of any coalition that does not contain all three mask holders is independent of the update, and that the protocol is \emph{verifiable} if an accepted aggregate differs from the honest aggregate only with probability negligible in $\lambda$.
+
+\begin{theorem}[Worker Privacy and Collusion Resistance]
+\label{thm:worker-privacy}
+For any coalition of at most two of the three mask holders of worker $i$, the coalition's view is independent of $m_i$; the update is recovered only when all three holders collude.
+\end{theorem}
+\begin{proof}
+Each mask share is sampled uniformly and independently from $\mathcal{R}_q$. Let us examine the three possible two-party coalitions.
+
+The own head $c$ sees $m_i'$ and $r_i^{(c)}$, the cloud $S$ sees $r_i^{(s)}$, and the neighbor head $c'$ sees $r_i^{(c')}$. If $c$ and $S$ collude, they can remove two shares and obtain
+\begin{equation}
+  m_i' - r_i^{(c)} - r_i^{(s)} = m_i - r_i^{(c')} .
+\end{equation}
+The remaining term $r_i^{(c')}$ is uniform and held exclusively by $c'$, so the result is uniformly distributed over $\mathcal{R}_q$ regardless of $m_i$, which is the perfect-secrecy property of the one-time pad. If $c$ and $c'$ collude, they similarly obtain $m_i-r_i^{(s)}$, which is masked by the cloud's share; if $S$ and $c'$ collude, they hold neither the blinded plaintext $m_i'$ nor the own head's share, and the ciphertexts reveal no additional information under the RLWE assumption. Thus in every two-party coalition at least one independent uniform mask is absent, and the view is independent of $m_i$. Only when $c$, $S$, and $c'$ all collude are all three shares available and $m_i$ recovered. This proves the 3-out-of-3 property.
+\end{proof}
+
+\begin{theorem}[Decryption-Key Collusion Resistance]
+\label{thm:key}
+Any coalition of at most $\tau-1$ cluster-heads, even jointly with the cloud, cannot reconstruct the group secret $s$ or decrypt the aggregate.
+\end{theorem}
+\begin{proof}
+After Phase~0 each head $c$ holds a single share $\Share c$ of a $( \tau, M)$ threshold sharing of $s$. In a Shamir sharing, the evaluation of a degree-$(\tau-1)$ polynomial at any $\tau-1$ points is consistent with every value of the constant term, and hence any $\tau-1$ shares are uniformly distributed and independent of $s$. The public share keys $pk_c^*$ are RLWE encodings of the form $-a\Share c+e_c^*$ and reveal no share under the RLWE assumption; the verification commitments in the Pedersen variant additionally hide the secret polynomial information-theoretically. The group public key $\bar b=-as+\bar e$ is itself an RLWE sample and therefore hides $s$. Finally, the cloud holds no share by construction. A coalition of at most $\tau-1$ heads with the cloud therefore holds at most $\tau-1$ shares together with semantically secure encodings, from which $s$ cannot be recovered, and the global ciphertext cannot be decrypted. Only $\tau$ valid shares reconstruct $s$ through Lagrange interpolation, which establishes the claim.
+\end{proof}
+
+\begin{theorem}[End-to-End Verifiability]
+\label{thm:verifiability}
+If the protocol accepts an aggregate, then the aggregate equals the honest aggregate of the signed blinded updates, except with probability $\negl(\lambda)$.
+\end{theorem}
+\begin{proof}
+We examine the three verification layers.
+
+\emph{Encryption.} Knowledge soundness of $\pi_i^{\mathrm{enc}}$ guarantees that a head that produces a verifying proof must know an $m_i'$ satisfying $ct_i'=\Enc_{\bar b}(m_i')$ and $H(m_i')=\hat h_i$, except with negligible probability; the bound EdDSA signature ties this $m_i'$ to the worker. A head that encrypts a different plaintext would need both a matching hash and a valid proof, which requires a collision under $H$ or a forged signature.
+
+\emph{Aggregation.} Suppose the cloud releases $M'\neq\sum_i m_i$, whether by tampering, fabrication, or selective omission. The hash test of Eq.~\eqref{eq:hash-test} accepts only if $H(M')=\sum_i h_i=H(\sum_i m_i)$, which requires a collision of the homomorphic hash, a SIS-hard event that occurs with probability $\negl(\lambda)$. Selective omission changes the sum and therefore fails the same test; the hash chain in the extended model further authenticates every individual update.
+
+\emph{Decryption.} Knowledge soundness of $\pi_c$ ensures that a head whose proof verifies against $pk_c^*$ has computed $D_c$ from the correct share $\Share c$; a wrong partial decryption cannot be proved except with negligible probability. Lagrange reconstruction from $\tau$ valid shares then yields the correct $s$.
+
+In an honest execution all tests pass, while any tampering at the three layers fails at least one test with probability $1-\negl(\lambda)$. Hence an accepted aggregate is the honest aggregate except with negligible probability.
+\end{proof}
+
+\begin{theorem}[Dropout Tolerance]
+\label{thm:dropout}
+\textsc{VHD-FL} outputs the aggregate over the surviving participants under arbitrary worker dropouts and up to $M-\tau$ cluster-head dropouts.
+\end{theorem}
+\begin{proof}
+For a worker that drops before distributing masks, no ciphertext is produced and the cloud excludes it with no residual mask. For a worker that drops after distributing masks but before encryption, the cloud uses the zero-ciphertext convention: the own head and the neighbor head remove the shares they hold while the cloud removes $r_i^{(s)}$, which is equivalent to adding an encryption of zero and canceling all three masks, leaving a net contribution of zero. For a worker that drops after encryption, the ciphertext is already valid and is aggregated normally. For cluster-head dropout, threshold decryption requires only $\tau$ of the $M$ heads, so the dropped head's partial decryption is simply not used; the cloud reassigns the head's encryption and mask-holding role to the surviving ring neighbor, which is already a strong node, and re-samples the affected cluster's masks at a cost of one modular subtraction per worker.
+
+After these adjustments, the surviving set uses the zero-ciphertext convention and Eq.~\eqref{eq:hash-test} is evaluated over the hashes of the surviving workers, so the identities in Eq.~\eqref{eq:correctness} still hold. The correct aggregate over the surviving participants is therefore recovered.
+\end{proof}

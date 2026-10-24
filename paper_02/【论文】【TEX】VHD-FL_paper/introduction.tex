@@ -1,0 +1,67 @@
+%%==============================================================================
+%% Section I: Introduction
+%%==============================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[font=\tiny,
+    wnode/.style={circle,inner sep=0pt,minimum size=2.4mm,fill=WorkerBlue!30,draw=WorkerBlue},
+    hnode/.style={rectangle,rounded corners=2pt,inner sep=1.5pt,minimum height=5mm,
+                  minimum width=13mm,fill=HeadTeal!15,draw=HeadTeal},
+    snode/.style={rectangle,rounded corners=3pt,inner sep=2pt,minimum height=7mm,
+                  minimum width=34mm,fill=ServerRed!12,draw=ServerRed},
+    flow/.style={-{Latex[length=1.5mm]},gray!75,line width=0.35mm}]
+    % --- Cloud ---
+    \node[snode] (S) {\scriptsize Cloud server $S$};
+    % --- Cluster heads ---
+    \foreach \i/\x in {0/-20,1/0,2/20}{
+      \node[hnode] (H\i) at ($(S.south)+( \x mm,-11mm)$) {\scriptsize CH $c_{\i}$};
+    }
+    % --- Workers ---
+    \foreach \i in {0,1,2}{
+      \foreach \k/\dx in {0/-4.5,1/0,2/4.5}{
+        \node[wnode] (w\i\k) at ($(H\i.south)+( \dx mm,-6.5mm)$) {};
+      }
+    }
+    % --- Links ---
+    \foreach \i in {0,1,2}{
+      \draw[flow] (H\i) -- (S);
+      \foreach \k in {0,1,2}{\draw[flow] (w\i\k) -- (H\i);}
+    }
+    % --- Tier labels ---
+    \node[HeadTeal,align=center,font=\tiny] at ($(H1)+(0,-1.5mm)$) {};
+    \node[anchor=north,font=\tiny,text=black!75] at ($(S.south)+(0,-20mm)$)
+      {\textbf{Cluster-head UAVs (strong)}};
+    \node[anchor=north,font=\tiny,text=black!75] at ($(S.south)+(0,-31mm)$)
+      {\textbf{Worker UAVs (MCU-class)}};
+  \end{tikzpicture}
+  \caption{Three-tier hierarchical FL over a UAV swarm. MCU-class worker UAVs are grouped into clusters, each governed by a capable cluster-head (CH) that performs the cryptographic workload and pre-aggregation; the cluster-heads connect to a cloud server that performs global aggregation and coordinates verification.}
+  \label{fig:hierarchy}
+\end{figure}
+
+\IEEEPARstart{U}{nmanned} aerial vehicle (UAV) swarms are increasingly deployed for disaster response, environmental monitoring, reconnaissance, and intelligent surveillance, in which a fleet of small, battery-powered aircraft collaborates to sense and act over a target area. Training a shared perception or decision model across the fleet is essential, yet the raw imagery, telemetry, and location traces are both volume-heavy and privacy-sensitive, which makes centralizing them impractical. Federated learning (FL) offers a natural fit: each vehicle trains locally on its own data and exchanges only model updates, so that raw samples never leave the device~\cite{bonawitz2019towards}. Because a flat, fully connected topology does not scale to large fleets, practical deployments organize the aircraft into a three-tier hierarchy in which worker UAVs are grouped into clusters governed by a more capable cluster-head UAV, and the cluster-heads in turn connect to a cloud server. Hierarchical aggregation over this topology reduces both the number of long-range links and the energy cost incurred at the weakest nodes~\cite{liu2020hierfavg},~\cite{wang2021rflha}, and it has become the standard structure for UAV-based collaborative learning~\cite{ahmed2025uav},~\cite{nagarajan2025drone}.
+
+Exchanging model updates, however, does not by itself preserve privacy. A broad line of gradient-inversion and reconstruction attacks demonstrates that, from a single update, an adversary can recover much of the underlying training data~\cite{zhu2019deep},~\cite{geiping2020inverting},~\cite{zhao2020idlg}, and recent studies show that these attacks remain effective against modern architectures~\cite{guo2025exploring}. In a swarm, the cloud and even peer cluster-heads occupy strong vantage points and are therefore realistic adversaries. Three families of countermeasures are commonly adopted. Differential privacy (DP)~\cite{mcmahan2017learning} injects calibrated noise but incurs a utility trade-off; secure aggregation built on secure multi-party computation~\cite{bonawitz2017practical} masks pairwise updates; and homomorphic encryption (HE)~\cite{gentry2009fully} allows the cloud to aggregate ciphertexts without learning any individual update. HE is particularly attractive for secure aggregation, and the Cheon--Kim--Kim--Song (CKKS) scheme~\cite{cheon2017ckks}, which is built on the ring learning-with-errors (RLWE) problem~\cite{lyubashevsky2010ideal}, supports approximate arithmetic and is well matched to real-valued neural-network updates.
+
+Deploying HE on a swarm exposes a sharp resource asymmetry. The dominant cost of CKKS encryption is a number-theoretic transform over a large polynomial ring, whose memory and energy footprint are prohibitive for the MCU-class processors that power small worker UAVs, while the larger cluster-heads can perform it. Outsourcing encryption to a cluster-head is the natural remedy, but it immediately raises two new problems. First, the cluster-head and cloud that mediate the outsourced computation are themselves untrusted, so a plaintext update handed to them is exposed. Second, conventional HE relies on a globally shared key that would allow any one intermediary to decrypt every update; existing outsourcing protocols therefore introduce a key distribution center or a trusted authority, and some additionally rely on a trusted execution environment~\cite{li2025fedphe},~\cite{wu2025esafl},~\cite{yuan2026fedout},~\cite{cai2023secfed}. In fielded UAV missions, however, no such trusted infrastructure is available.
+
+Removing the trusted anchor is not sufficient, because two structural vulnerabilities remain. On the one hand, intermediaries are not merely curious but potentially malicious: a cluster-head may encrypt a modified plaintext and thereby poison the global model, and the cloud may fabricate an aggregate, selectively discard updates, or request the decryption of a chosen individual. On the other hand, the threat model explicitly permits the cluster-heads and cloud to collude, which is fatal to a naive two-party outsourcing design in which one party sees the blinded plaintext and the other holds a single masking factor, since their two views reconstruct the update. Prior verifiable protocols either stop at decryption-time verification without an inclusion proof~\cite{bouamama2025vesafl}, or add a dedicated masking server that is not part of the fixed three-tier topology. Three challenges therefore emerge:
+
+\begin{itemize}[leftmargin=*,topsep=2pt,itemsep=1pt]
+  \item \textbf{C1: Key establishment without trust.} How can a group decryption key be established without a trusted authority when worker UAVs cannot participate in key generation and the cloud must not be able to decrypt alone?
+  \item \textbf{C2: Entity-free collusion-resistant outsourcing.} How can encryption be outsourced to a cluster-head while hiding the update from the cluster-head and cloud even when they collude, using only the entities already present in the three-tier hierarchy?
+  \item \textbf{C3: End-to-end verifiability and dropout tolerance.} How can encryption, aggregation, and decryption be made publicly verifiable against a malicious cloud and corrupted cluster-heads while tolerating the frequent worker and cluster-head dropouts of wireless swarms?
+\end{itemize}
+
+We address these questions with \textsc{VHD-FL}. To answer C1, the cluster-heads run a distributed key generation (DKG) to establish a group key, and the resulting secret is shared among the cluster-heads through a threshold verifiable secret-sharing scheme; worker UAVs take no part in key generation and the cloud holds no share, so the cloud alone cannot decrypt. To answer C2, each worker masks its update with a blinding factor split into three additive shares and delivers them to its own cluster-head, the cloud, and a neighboring cluster-head arranged in a ring. The neighboring cluster-head is an existing strong node, so no new entity is introduced, and the three shares form a 3-out-of-3 secret sharing that resists collusion between any two holders. To answer C3, \textsc{VHD-FL} enforces three-layer verifiability: a zero-knowledge proof binds each ciphertext to the blinded plaintext, a homomorphic hash detects a forged aggregate or selective omission, and a further proof validates every partial decryption; threshold reconstruction and zero ciphertexts tolerate dropouts.
+
+The main contributions are summarized as follows:
+\begin{itemize}[leftmargin=*,topsep=2pt,itemsep=1pt]
+  \item We design a \textbf{trust-anchor-free cluster-head DKG} that integrates a threshold verifiable secret sharing into the aggregation key. Worker UAVs contribute nothing to key generation and the cloud holds no share, yielding collusion-resistant threshold decryption without a trusted authority.
+  \item We propose \textbf{three-blind outsourced encryption} that reuses a neighboring cluster-head as the third mask holder. It realizes 3-out-of-3 additive secret sharing, resists collusion between any two mask holders without adding an entity, and reduces per-round worker work to a single modular subtraction plus one lightweight signature.
+  \item We establish \textbf{three-layer verifiability}---encryption zero-knowledge proofs, a homomorphic hash over the aggregation, and decryption proofs---against a malicious cloud and corrupted cluster-heads. We prove the corresponding privacy, verifiability, and dropout-tolerance properties, and experiments on MNIST, CIFAR-10, and FEMNIST show that \textsc{VHD-FL} matches plaintext FedAvg accuracy while substantially reducing worker and communication overhead.
+\end{itemize}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:preliminaries} introduces the system model, threat model, cryptographic building blocks, and notation. Section~\ref{sec:scheme} details the \textsc{VHD-FL} scheme, and Section~\ref{sec:algorithms} presents the algorithms. Section~\ref{sec:security} gives the security analysis, Section~\ref{sec:evaluation} reports the performance evaluation, and Section~\ref{sec:conclusion} concludes the paper and discusses future directions.

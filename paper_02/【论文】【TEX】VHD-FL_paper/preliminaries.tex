@@ -1,0 +1,131 @@
+%%==============================================================================
+%% Section III: Preliminaries (notation table, system/threat model, primitives)
+%%==============================================================================
+\section{Preliminaries}
+\label{sec:preliminaries}
+
+\subsection{Notation}
+Table~\ref{tab:notation} lists the symbols used throughout the paper. Acronyms are defined at first use, and every mathematical symbol is defined in the table, so subsequent sections do not repeat its definition.
+
+\begin{table}[t]
+\centering
+\caption{Summary of Key Notation}
+\label{tab:notation}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{0.27\columnwidth} >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Notation} & \textbf{Description} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{System and Hierarchy}}\\
+$\lambda,n,q,\Delta$ & Security parameter, ring dimension, modulus, CKKS scale \\
+$N,M,\tau$ & Numbers of worker UAVs, cluster-heads, and threshold \\
+$G_c,N_c,c'$ & Worker set of cluster $c$, its size, neighbor head \\
+$\ell,T$ & Communication round index and total rounds \\
+$S$ & Cloud server \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Keys and Shares}}\\
+$s_c,b_c$ & CH $c$ secret contribution and public component \\
+$s,\bar{b}$ & Group secret and group public key \\
+$[s]_c,pk_c^*$ & CH $c$ threshold share and share public key \\
+$sk_i^{\mathrm{sig}},vk_i^{\mathrm{sig}}$ & Worker EdDSA signing and verification keys \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Updates, Masks, and Hash}}\\
+$m_i,m_i'$ & Worker update and blinded update \\
+$r_i^{(c)},r_i^{(s)},r_i^{(c')}$ & Three mask shares; $r_i$ is their sum \\
+$h_i,\sigma_i$ & Homomorphic hash and worker signature \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Ciphertexts, Proofs, and Crypto}}\\
+$ct_i',ct^{(c)},ct_{\mathrm{glob}}$ & Individual, cluster, and global ciphertexts \\
+$v_i,e_{i,0},e_{i,1}$ & Encryption randomizer and error terms \\
+$D_c,\lambda_c$ & Partial decryption and Lagrange coefficient \\
+$\pi_i^{\mathrm{enc}},\pi_c$ & Encryption and decryption NIZKs \\
+$a,\chi_s,\chi_e$ & Public polynomial, key and error distributions \\
+$\mathcal{R}_q,\mathcal{R}_p,\mathrm{negl}(\cdot)$ & Rings and negligible function \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Hierarchical FL and System Model}
+\label{subsec:systemmodel}
+We consider a three-tier hierarchical FL system. The $N$ worker UAVs are partitioned into $M$ disjoint clusters $G_1,\ldots,G_M$, with $N_c=|G_c|$ and $\sum_{c=1}^{M}N_c=N$. Each cluster is managed by one cluster-head UAV, and the $M$ heads connect to a cloud server. Worker $i$ holds a local dataset $\mathcal{D}_i$ and a model $w\in\mathbb{R}^{d}$. At round $\ell$, a worker performs local stochastic gradient descent to obtain an update $m_i$; the head pre-aggregates within the cluster, and the cloud aggregates the $M$ cluster results. The correct plaintext aggregate is
+\begin{equation}
+  \label{eq:plaintext-agg}
+  \mglob=\sum_{i=1}^{N} m_i .
+\end{equation}
+Worker $i$ derives its update through local stochastic gradient descent over $E$ local epochs,
+\begin{equation}
+  \label{eq:local-update}
+  m_i = w_{\ell-1}-w_i^{(E)},\qquad
+  w_i^{(k+1)} = w_i^{(k)} - \eta_{\ell}\nabla\mathcal{L}(w_i^{(k)};\mathcal{B}_i),
+\end{equation}
+where $\mathcal{B}_i$ is a local minibatch and $\mathcal{L}$ the empirical loss. The data are heterogeneous: the class proportion vector $p_k$ of worker $k$ follows $p_k\sim\mathrm{Dir}(\alpha)$, and smaller $\alpha$ yields a more skewed partition.
+
+We use unweighted aggregation for clarity; dataset-size weights $p_i$ can be absorbed by replacing each $m_i$ with $p_i m_i$.
+
+The four role classes are as follows:
+\begin{itemize}[leftmargin=*,topsep=2pt,itemsep=1pt]
+  \item \textbf{Worker UAV $i$} ($N$, MCU-class, no NTT): local training, one-time pad blinding, sampling of three mask shares, a linear homomorphic hash, and an EdDSA signature.
+  \item \textbf{Cluster-head UAV $c$} ($M$, strong): outsourced encryption, NIZK proofs, verifiable secret sharing, intra-cluster pre-aggregation, and partial decryption; it holds one share of the group secret.
+  \item \textbf{Neighbor cluster-head $c'$} ($M$, strong): the ring neighbor $c'=(c+1)\bmod M$, which holds the third mask share and has the same capabilities as a head.
+  \item \textbf{Cloud server $S$} ($1$, strong): aggregation and verification coordination, including threshold-decryption interpolation; it holds no key share.
+\end{itemize}
+
+\subsection{Threat Model and Security Goals}
+\label{subsec:threat}
+We make the following adversarial assumptions.
+\begin{itemize}[leftmargin=*,topsep=2pt,itemsep=1pt]
+  \item \textbf{Cloud server.} The cloud is \emph{malicious}: it may fabricate the aggregate, selectively discard updates, tamper with the downlink model, and selectively request the decryption of a chosen individual.
+  \item \textbf{Cluster-heads.} Heads are \emph{semi-honest but curious} and corruptible; any coalition of at most $\tau-1$ heads, including a coalition with the cloud, cannot reconstruct the group secret.
+  \item \textbf{Worker UAVs.} In the baseline model workers are honest-but-curious and may drop out arbitrarily. In the extended model, a malicious worker may upload any update and a captured worker is fully controlled by the attacker.
+  \item \textbf{Mask holders.} Of the three holders of a blinded update, any two that collude cannot recover the update (3-out-of-3).
+  \item \textbf{Channels and trust.} No trusted authority exists. The three mask shares are carried over independent secure channels; all other traffic is public.
+\end{itemize}
+Accordingly, \textsc{VHD-FL} targets four security goals: \emph{G1}, worker privacy against collusion; \emph{G2}, secrecy of the group decryption key against a threshold coalition; \emph{G3}, end-to-end verifiability of encryption, aggregation, and decryption against a malicious cloud; and \emph{G4}, tolerance of arbitrary worker and cluster-head dropouts.
+
+We formalize these goals with two standard games. In the \emph{privacy game}, the adversary chooses two updates $m_0,m_1$, receives the transcript produced for a uniformly hidden bit $b$, and outputs a guess; the protocol is private if its distinguishing advantage is $\negl(\lambda)$. In the \emph{verifiability game}, the adversary controls the cloud and corrupted intermediaries and attempts to make the verifier accept an aggregate different from the honest one; the protocol is verifiable if this success probability is $\negl(\lambda)$. Section~\ref{sec:security} establishes both games and the dropout property.
+
+\subsection{Ring Learning with Errors and CKKS}
+\label{subsec:rlwe}
+Let $R=\mathbb{Z}[X]/(X^n+1)$ be the cyclotomic ring for a power-of-two $n$, with residue ring $\mathcal{R}_q=R/qR$, and let $\chi_s$ and $\chi_e$ output small polynomials. The \emph{RLWE assumption} states that pairs $(a,b)$ with $a\leftarrow\mathcal{U}(\mathcal{R}_q)$, $s\leftarrow\chi_s$, and $b=[-as+e]_q$ for $e\leftarrow\chi_e$ are computationally indistinguishable from uniform pairs in $\mathcal{R}_q^2$~\cite{lyubashevsky2010ideal}.
+
+CKKS~\cite{cheon2017ckks} maps a real vector to a plaintext polynomial through an isometric isomorphism $\varphi:R\to\mathbb{C}^{n/2}$ and a scaling factor $\Delta$, packing $n/2$ values into one ciphertext (SIMD). It is additively homomorphic, which is all that secure aggregation requires. Recent diagonal packing improves the slot layout for matrix and sparse vectors~\cite{lee2026hydia},~\cite{deryabin2026packing}, and refined modular approximation lowers the noise~\cite{zhang2026efficient}. We use its standard public-key form. The public key is $(\bar b,a)$ with $\bar b=-as+\bar e$; to encrypt a message $m$, sample $v\leftarrow\chi_s$ and $e_0,e_1\leftarrow\chi_e$:
+\begin{equation}
+  \label{eq:ckks-enc}
+  ct=\Enc_{\bar b}(m)=(c_0,c_1)=(v\bar b+m+e_0,\; va+e_1).
+\end{equation}
+Decryption cancels the $a$-component using the secret:
+\begin{equation}
+  \label{eq:ckks-dec}
+  c_0+s c_1=m+v\bar e+e_0+s e_1\approx m .
+\end{equation}
+The accumulated small terms are treated as approximation noise. Correct decryption requires this noise to remain below the plaintext resolution:
+\begin{equation}
+  \label{eq:noise-bound}
+  \|v\bar e+e_0+s e_1\|_\infty < \Delta/2 .
+\end{equation}
+CKKS bootstrapping~\cite{cheon2018bootstrapping} can refresh the noise budget if the depth grows, but our scheme performs only addition, so the noise does not accumulate with depth.
+
+\subsection{Homomorphic Hash}
+\label{subsec:hash}
+We use a linear homomorphic hash over a group in which finding a non-trivial short relation is SIS-hard. For a vector $m=(m_1,\ldots,m_d)$ and fixed public generators $g_j$,
+\begin{equation}
+  \label{eq:homhash}
+  H(m)=\sum_{j=1}^{d} m_j g_j .
+\end{equation}
+The map is linear, $H(m+m')=H(m)+H(m')$, and it is collision-resistant: $H(m)=H(m')$ implies $\sum_j(m_j-m_j')g_j=0$, a short non-zero relation among the generators that constitutes a SIS instance~\cite{krohn2004fly},~\cite{micciancio2001svp}. It therefore verifies an aggregate through $H(\mglob)=\sum_i H(m_i)$.
+
+\subsection{Verifiable Secret Sharing and Distributed Key Generation}
+\label{subsec:dkg}
+A $( \tau, M)$ \emph{Shamir sharing}~\cite{shamir1979} encodes a secret $s$ in a degree-$(\tau-1)$ polynomial $f$ and gives share $f(c)$ to party $c$; any $\tau$ shares in a set $T$ reconstruct $s$ through Lagrange interpolation,
+\begin{equation}
+  \label{eq:lagrange}
+  s=\sum_{c\in T}\lambda_c f(c),\qquad
+  \lambda_c=\prod_{j\in T,\,j\neq c}\frac{-j}{c-j},
+\end{equation}
+while fewer than $\tau$ shares reveal nothing. \emph{Feldman VSS}~\cite{feldman1987} publishes commitments $g^{a_j}$ to the coefficients so that each share is publicly verifiable, and \emph{Pedersen VSS}~\cite{pedersen1991} adds a blinding polynomial that hides the secret information-theoretically. A \emph{distributed key generation} protocol~\cite{gennaro2007dkg} combines these commitments and nonces to produce a joint public key without any dealer, tolerating a dishonest minority. Phase~0 instantiates this protocol among the cluster-heads.
+
+\subsection{Non-Interactive Zero-Knowledge Proofs}
+\label{subsec:nizk}
+A non-interactive zero-knowledge (NIZK) proof for a relation $\mathcal{R}$ lets a prover demonstrate knowledge of a witness $w$ with $(x,w)\in\mathcal{R}$ without revealing $w$, and it satisfies completeness, knowledge soundness, and zero knowledge. NIZKs are obtained in the random-oracle model through the Fiat--Shamir transform, with succinct pairing-based arguments~\cite{groth2016} or lattice-based instantiations~\cite{grothsahai2008}. We use them to prove, first, that a ciphertext encrypts a committed plaintext and, second, that a partial decryption is correct. All such proofs are generated by the strong cluster-heads, never by the worker UAVs. The only worker-side signature is EdDSA over a twisted Edwards curve, which requires no NTT and completes in tens of microseconds~\cite{rfc8032}.
