@@ -1,0 +1,159 @@
+# ============================================================================
+# RFL 实验配置 —— 鲁棒 + 可验证联邦学习（Zhou et al. IEEE TDSC 2026）
+# ============================================================================
+# 轨道：rfl.enabled=true → 整条训练路线切换为 RFL 协议（云CS/边缘ES/客户端EC
+# 三层 split learning + 中间表示 DP + 数字签名身份验证 + 同态哈希聚合校验），
+# 不经单密钥 CKKS。信任模型：云 CS 可半诚实/恶意，ES/EC 诚实。详见 doc/rfl.md。
+#
+# 运行：python main.py --config configs/config_rfl.yaml --output-dir results/test_rfl
+# 演示：
+#   可验证性   → cs_tamper: "drop_edge" 或 "scale_edge"（式 17 校验失败，全体中止）
+#   IFGIA 防御 → simulate_ifgia: true（伪造客户端被式 9 验签拒绝）
+
+system:
+  num_clients: 20                    # 参与联邦学习的客户端总数
+  num_rounds: 10                     # 联邦学习总通信轮数
+  num_epochs: 1                      # 保留字段（RFL 轮用 rfl.local_epochs）
+  batch_size: 64                     # 本地训练批次大小
+  learning_rate: 0.001               # 保留字段（RFL 更新步长用 rfl.global_zeta）
+  device: "cpu"                      # split learning 单进程仿真，CPU 足够
+  random_seed: 42
+  client_sampling_rate: 1.0          # RFL 默认全采样（边缘分组需要稳定客户端集）
+  upload_difference: true            # 保留字段（RFL 轨道不使用）
+  optimizer:
+    name: "sgd"
+    lr: 0.001
+  lr_scheduler:
+    enabled: false
+    name: "step"
+    step_size: 10
+    gamma: 0.5
+    T_max: 30
+    eta_min: 0.0
+
+data:
+  dataset: "mnist"
+  data_dir: "./data"
+  num_classes: 10
+  iid: true                          # RFL 演示默认 IID（论文设置与 Non-IID 均可）
+  alpha: 1
+
+model:
+  name: "mlp"                        # RFL 模型切分支持 mlp（hidden 层切分）/ cnn（conv/fc 切分）
+  hidden_dims: [64, 32]              # 小维度加速同态哈希（HH 按维度数模幂）
+  dropout: 0.2
+
+# RFL 不经单密钥 CKKS：关闭加密即跳过全部 CKKS 初始化（仅运行 RFL 一条轨道）
+encryption:
+  enabled: false
+
+defense:
+  aggregation_rule: "fedavg"         # 保留字段（RFL 聚合在协议内，式 15）
+  anomaly_filter: null
+  params: {}
+
+ckks:                                # 保留字段（hierarchy 初始化读取 poly_modulus_degree）
+  poly_modulus_degree: 4096
+  coeff_mod_bit_sizes: [40, 20, 40]
+  global_scale: 1048576              # 2^20
+  slot_packing: true
+  packing:
+    strategy: "merged"
+  sparsification:
+    strategy: "none"
+    sparsity_rate: 0.1
+    batch_size: 4096
+    seed: 42
+    scoring_method: "avg_abs"
+  ptopk:
+    enable: false
+    client_residual:
+      enabled: false
+      stale_gamma: 0.5
+      decay_gamma: 0.3
+      clip_tau: 0.0
+
+global_mask_vote:
+  mode: "none"
+
+# 云-边-端三层架构（RFL 前提；rfl.enabled=true 时自动开启，此处显式写出便于调参）
+hierarchy:
+  enabled: true
+  num_edges: 3                       # 边缘服务器 ES 数量
+  assignment: "static"
+  edge_selection_rate: 1.0
+  uav:
+    area_size: 1000.0
+    speed: 30.0
+    coverage_radius: 400.0
+    strict_coverage: false
+    seed: 42
+
+attack:
+  enabled: false                     # ⚠️ RFL 轨道不支持 hfl_attacks 注入（见 config.yaml 说明）
+
+# RFL 协议配置（含义逐字段见 configs/config.yaml 的 rfl 段注释）
+rfl:
+  enabled: true
+  epsilon: 5.0
+  delta_dp: 1.0e-5
+  clip_threshold: 1.0
+  client_dp_noise: true
+  num_shallow_layers: 1              # 浅层 = 第一个隐藏层（64 维中间表示）
+  hash_bits: 256
+  hash_scale: 10000
+  local_epochs: 1
+  global_zeta: 0.2                 # 全局步长：w ← w − ζ·g（MNIST 归一化数据下
+                                  # ζ≥0.3 会震荡；0.2 稳定收敛）
+  cs_tamper: "none"
+  cs_tamper_scale: 1.5
+  simulate_ifgia: false
+  ifgia_per_edge: 1
+
+threshold:
+  enabled: false
+  mode: "ttp"
+  t: 5
+  combiner: "client"
+  smudging: true
+
+bandwidth:
+  base_dl_bw: 1024.0
+  base_ul_bw: 512.0
+  variance: 0.3
+  distribution: "lognormal"
+  filter_low_bandwidth: false
+  min_dl_bw_kbps: 5120
+  min_ul_bw_kbps: 5120
+  max_dl_bw_kbps: .inf
+  max_ul_bw_kbps: .inf
+
+metrics:
+  compute_time: true
+  communication_cost: true
+  ciphertext_size: true
+  expansion_ratio: true
+  accuracy: true
+  loss: true
+  communication_rounds: true
+  dropout_rate: true
+  cpu_utilization: true
+  key_distribution_cost: true
+  memory_usage: true
+
+visualization:
+  enabled: false
+  save_format: "png"
+  dpi: 300
+  figure_size: [10, 6]
+  style: "seaborn-v0_8-whitegrid"
+
+output:
+  results_dir: "./results"
+  model_dir: "./history_models"
+  viz_dir: "./visualization"
+  save_interval: 999
+
+resume:
+  enabled: false
+  from: null

@@ -310,6 +310,43 @@ ppbr:
 
 
 # ============================================================================
+# 八·五、RFL 配置 (rfl) —— 鲁棒 + 可验证联邦学习（Zhou et al. IEEE TDSC 2026）
+# ============================================================================
+# enabled=false（默认）时行为完全不变。enabled=true 时整条训练路线切换为
+# RFL 协议轨道（自动开启 hierarchy 云-边-端三层架构，见 doc/rfl.md）：
+#   CS 把全局模型切分为浅层(→EC)/深层(→ES)；EC 浅层前向(式6) → 中间表示
+#   高斯 DP 加噪(式7, σ=c·d·S2/ε, S2=2C/|D_u|) → 签名上传(式8) → ES 验签
+#   (式9, 伪造身份被拒=IFGIA 防御) → 深层前向(式10) → EC 输出梯度(式11)
+#   → ES 深层反向(式12) → 同态哈希+签名(式13/14) → CS 聚合(式15) → 各 ES
+#   签名+哈希校验(式16/17, 失败全体中止本轮)。
+# 信任模型：云 CS 可半诚实/恶意，ES/EC 诚实。加密体系 = 数字签名(Ed25519)
+# + 同态哈希，不经单密钥 CKKS；⚠️ 与 ppbr/threshold 互斥（启动校验）。
+# ⚠️ RFL 轨道不支持 hfl_attacks 客户端攻击注入（split learning 消息语义
+#    不同）；可验证性演示用 cs_tamper，IFGIA 演示用 simulate_ifgia。
+rfl:
+  enabled: false                  # true=开启 RFL 协议轨道（自动开启 hierarchy）
+  epsilon: 5.0                    # DP 隐私预算 ε（式 7，越小噪声越大）
+  delta_dp: 1.0e-5                # DP 失败概率 δ（式 7 中 c=√(2ln(1.25/δ))）
+  clip_threshold: 1.0             # 裁剪阈值 C → 灵敏度 S2 = 2C/|D_u|
+  client_dp_noise: true           # false=关闭客户端 DP 噪声（对照实验）
+  num_shallow_layers: 1           # 切给 EC 的浅层隐藏层数 Ls（论文默认 1；
+                                  # 浅层输出维度恒定 → EC 开销与全局模型
+                                  # 维度无关，Theorem 4）
+  hash_bits: 256                  # 同态哈希群位宽（安全素数 p=2q+1）
+  hash_scale: 10000               # 浮点梯度→定点量化缩放（式 17 在整数域校验）
+  local_epochs: 1                 # 每轮客户端本地 split learning 迭代轮数
+  global_zeta: 0.1                # 全局步长：w ← w − ζ·g（g 为聚合梯度）
+  cs_tamper: "none"               # 恶意云仿真："none"/"drop_edge"(丢弃某边缘
+                                  # 更新)/"scale_edge"(缩放某边缘更新)——两种
+                                  # 篡改均使式(17) 校验失败，全体 ES 中止本轮
+  cs_tamper_scale: 1.5            # scale_edge 模式的缩放因子
+  simulate_ifgia: false           # IFGIA 仿真（论文 §III）：CS 伪造虚拟客户端
+                                  # 注入分组；伪造身份无 EC→ES 直连注册记录，
+                                  # 式(9) 验签拒绝
+  ifgia_per_edge: 1              # 每个边缘注入的伪造客户端数
+
+
+# ============================================================================
 # 九、门限 CKKS 解密配置 (threshold) —— t-out-of-n 门限解密（可插拔）
 # ============================================================================
 # enabled=false（默认）时保持现有"每个客户端持完整 sk"架构，行为完全不变。
@@ -390,3 +427,37 @@ output:
   model_dir: "./history_models"     # 每轮模型 checkpoint 保存目录
   viz_dir: "./visualization"        # 可视化图表保存目录
   save_interval: 999                # 每 N 轮保存一次模型；999 = 仅保存最终模型
+
+
+# ============================================================================
+# 十四、AThFHE 两方案配置 (athfhe_hier / athfhe_twin，USENIX Sec'25 ATASSES 扩展)
+# ============================================================================
+# 两条轨道互斥、与 ppbr/rfl/threshold 互斥，且要求 encryption.enabled=true。
+# 均为自带外层 CKKS（numpy 大整数仿真）加密的完整协议轨道，不走 TenSEAL。
+# 方案一：分簇层次架构（内层升环 R_{M,Q'}，Q'>2·n_c·Q²·B'，解密份额 Δ'
+#   编码 + 取整去噪，底噪 100% 消除）；方案二：非共谋双服务器架构（PRG 种子
+#   掩码不升环、单轮发完即走）。详见 doc/athfhe.md。
+#
+# ⚠️ 性能 trade-off：环次数 M 与模数位宽决定大整数乘法开销，参数量切块数
+# = 参数量/(M/2)。M=256 + 60bit 外层 + 20bit 内层底噪时内层模数 Q'≈140+bit，
+# 一轮的开销 ≈ 块数 × 在线客户端数 × 常数——大模型/多客户端请调小
+# ring_degree（如 64/128）或降低 outer_modulus_bits/inner_noise_bits 再测。
+athfhe_hier:
+  enabled: false
+  num_clusters: 2        # C：簇数（客户端均分，每簇必须 ≥ cluster_threshold）
+  cluster_threshold: 2   # t_c：每簇门限（任意 ≥t_c 在线即可解密，支持 T1≠T2 异步掉线）
+  ring_degree: 256       # M：环次数（2 的幂；M/2 = 每块打包的梯度维度数）
+  outer_modulus_bits: 60
+  scale_bits: 40         # Δ_ckks = 2^40（解码误差 ~1e-8 量级）
+  inner_noise_bits: 20   # B'：内层底噪界（2 的幂，Q' > 2·n_c·Q²·B' 的参数界输入）
+  smudge_bits: 10        # B_sm：掩码噪声界（2 的幂，CH 视图差值 |Σn| ≤ |T1|·B_sm）
+  dropout: 0             # 每回合随机掉线客户端数（0 = 全部在线；须保证每簇在线 ≥ t_c）
+
+athfhe_twin:
+  enabled: false
+  threshold: 3           # T：门限（任意 ≥T 在线即可解密；单轮发完即走、零 P2P）
+  ring_degree: 256
+  outer_modulus_bits: 60
+  scale_bits: 40
+  smudge_bits: 10        # B_sm：掩码噪声界
+  dropout: 0             # 随机掉线客户端数（|T|-dropout ≥ threshold 才能解密）

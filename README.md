@@ -13,6 +13,8 @@
 - **统一攻击框架**（`hfl_attacks/`）：四类攻击注册到统一注册表，由主配置 `attack` 段一键开关，攻击发生在客户端本地明文域、加密上传之前。
 - **PPBR 可插拔拜占庭鲁棒**（`ppbr/`）：严格按 He 等 IEEE TMC 2026 实现完整协议——边层 CLDP 符号统计聚类过滤恶意客户端、云层两轮点积范数盲化 + 中位数筛选与裁剪恶意边缘、SA 成对掩码安全聚合、客户端动量；`ppbr.enabled: true` 自动开启云-边-端架构并**切换整条加解密路线为 PPBR 协议**（双轨架构，不走全局投票/TopK），与 attack 段组合即"攻击 × 防御"实验。详见 `doc/ppbr.md`。
 - **门限 CKKS 解密**（`threshold/`）：可插拔 t-out-of-n 门限解密，把"每个客户端持完整 sk"改造为"任意 ≥t 个参与方协作才能解密"。两种模式：`ttp`（可信 Dealer Shamir 分片完整私钥并销毁，doc §4）与 `dkg`（Pedersen 分布式密钥生成，无 TTP，doc §5）；组合器可选 `client`（场景 B，服务器盲，推荐）/ `server`（场景 A）。客户端加密上传、服务器密文聚合路径完全不变；`threshold.enabled: true` 仅作用于 CKKS 轨道（与 PPBR 互斥）。完整协议分析见 `doc/threshold_ckks.md`。
+- **RFL 鲁棒 + 可验证联邦学习**（`rfl/`）：严格按 Zhou 等 IEEE TDSC 2026 实现完整协议——云-边-端三层 split learning（浅层→客户端、深层→边缘服务器）、中间表示轻量高斯 DP（式 7）、数字签名身份验证（式 8/9，IFGIA 伪造客户端被拒）、同态哈希聚合完整性校验（式 13-17，恶意云篡改被检出、全体边缘中止）。信任模型为**恶意云**（不同于 hfl_attacks 的恶意客户端视角，RFL 轨道不支持攻击注入）；`rfl.enabled: true` 自动开启层次架构、跳过 CKKS（签名+同态哈希体系），与 ppbr/threshold 互斥。详见 `doc/rfl.md`。
+- **AThFHE 任意门限 FHE 两扩展**（`athfhe/`）：USENIX Sec'25 ATASSES 论文的两种联邦扩展——方案一**分簇层次架构**（云 CS/簇头 CH_c/客户端三层，内层升环 `Q' > 2·n_c·Q²·B'`、解密份额 Δ' 编码 + 取整去噪使内层底噪 100% 消除，支持 T1≠T2 异步掉线）与方案二**非共谋双服务器架构**（聚合服务器 + 辅助密钥服务器，128-bit 种子经 PRG 展开均匀随机掩码私钥——`(a'u')·ek` 即完美一次性掩码，不升环、单轮发完即走）；外层均为玩具 CKKS（numpy 大整数仿真）梯度加密，服务器全程拿不到私钥份额。两条轨道互斥、与 ppbr/rfl/threshold 互斥且要求 `encryption.enabled=true`。详见 `doc/athfhe.md`。
 - **明文鲁棒聚合基线**（`baseline/`）：SFLBR 论文对比表中的明文基线集合（FedAvg / Krum / Multi-Krum / Median / T-mean / GeoMed / CenteredClipping / DnC / DP-BREM / RFLBA），每个算法一个子包并统一接口注册到 `AGGREGATION_REGISTRY`。配合 `encryption.enabled: false`（明文模式）即"明文 FedAvg + 鲁棒防御"实验路径：跳过全部 CKKS 初始化，服务器按 `defense.aggregation_rule` 从注册表分派聚合规则。详见 `baseline/README.md`。
 
 > **已知限制**：密文域只能执行同态加权平均（FedAvg），median/krum/trimmed_mean 等
@@ -23,7 +25,18 @@
 
 ```
 HFL-Attack/
-├── ckks_fed/                  # 核心包
+├── base/                      # 通用基础层（各方案包共享，互不依赖）
+│   ├── log_utils.py           # 双写日志 / 实验输出目录
+│   ├── models.py              # MLP / CNN / LeNet 等模型定义
+│   ├── data.py                # 数据集加载与客户端数据划分 (IID / Dirichlet 非IID)
+│   ├── client_selection.py    # 客户端随机选择 (random)
+│   ├── bandwidth_simulator.py # 带宽/通信开销统计
+│   ├── aggregation.py         # RuleSpec + 聚合规则注册表 (解环)
+│   ├── grouping.py            # 客户端关联策略 (Static / UAV)
+│   ├── anomaly.py             # 服务器端异常检测防御 (坐标中值/范数筛选/LOF)
+│   └── sa.py                  # 真实 SA (Bonawitz'17): X25519+HKDF 协商、
+│   │                          #   Shamir 掉线恢复 (ppbr 与 threshold 共用)
+├── ckks/                      # 核心包：密文联邦 + 层次聚合
 │   ├── crypto.py              # CKKS 上下文/加密/解密/同态聚合 (CKKSManager)
 │   ├── packing.py             # 打包策略: layerwise / merged
 │   ├── sparsification.py      # 客户端本地 TopK/RandK 稀疏化
@@ -31,11 +44,7 @@ HFL-Attack/
 │   ├── ptopk.py               # Packed TopK 残差补偿 (Error Feedback)
 │   ├── client.py              # FederatedClient
 │   ├── server.py              # AggregationServer (聚合 + 掩码投票 + 防御过滤)
-│   ├── hierarchy.py           # 层次联邦: EdgeNode / UAV 关联 / 云-边-端密文聚合
-│   ├── client_selection.py    # 客户端随机选择 (random)
-│   ├── models.py              # MLP / CNN / LeNet 等模型定义
-│   ├── data.py                # 数据集加载与客户端数据划分 (IID / Dirichlet 非IID)
-│   ├── attacks/               # 模型投毒后端类 (供 hfl_attacks 适配)
+│   ├── hierarchy.py           # 层次联邦: EdgeNode / 云-边-端密文聚合
 │   └── defenses/              # 鲁棒聚合规则实现 (仅明文聚合路径生效)
 ├── hfl_attacks/               # 统一攻击库 (4 类 25 种, 注册表驱动)
 │   ├── base.py                # 攻击接口 + ATTACK_REGISTRY
@@ -52,20 +61,31 @@ HFL-Attack/
 │   ├── clustering.py          # 算法2c: trimmed k-means 聚类过滤
 │   ├── controller.py          # 数学机制: 动量/边缘均值/范数筛选裁剪
 │   ├── crypto.py              # 传输层: PLHE 分块加解密 + sim 模式种子掩码
-│   ├── sa.py                  # 真实 SA (Bonawitz'17): X25519+HKDF 协商、
-│   │                          #   Shamir 掉线恢复（见 doc/ppbr.md §3.2）
 │   └── protocol.py            # PPBRProtocol: 云/边缘/客户端完整协议时序
 ├── threshold/                 # 门限 CKKS 解密 (t-out-of-n，可插拔，见 doc/threshold_ckks.md)
-│   ├── sharing.py             # 任意长度秘密分块 Shamir 分片/恢复（复用 ppbr/sa.py）
+│   ├── sharing.py             # 任意长度秘密分块 Shamir 分片/恢复（复用 base/sa.py）
 │   ├── dkg.py                 # Pedersen DKG（承诺 + 份额验证 + 集体公钥）
 │   ├── toy_ckks.py            # 教科书 CKKS + 真·门限部分解密演示（numpy/CPU）
 │   └── ceremony.py            # ThresholdDecryptor: 仪式编排 + 通信开销统计
+├── rfl/                       # RFL 鲁棒+可验证联邦学习 (Zhou 等 TDSC 2026，轨道架构)
+│   ├── config.py              # RFLConfig 超参数（论文默认值）
+│   ├── crypto.py              # DigitalSignature (Ed25519, 式8/9/14/16) +
+│   │                          #   HomomorphicHash (乘性同态哈希, 式13/17)
+│   ├── splitnn.py             # 模型切分 (浅层→EC/深层→ES, 式6/10) + DP 尺度 (式7)
+│   └── protocol.py            # RFLProtocol: 论文算法 2 完整消息时序
+├── athfhe/                    # AThFHE 两方案 (USENIX Sec'25 ATASSES 扩展，轨道架构)
+│   ├── ckks_toy.py            # 公共外层: 分圆环运算(limb 参数化 FFT 乘法) + 玩具 CKKS
+│   │                          #   + 素数筛 + 按系数 Shamir 分片/Lagrange
+│   ├── hier.py                # 方案一: 分簇层次架构 (内层升环 Q'>2·n_c·Q²·B', 取整去噪)
+│   ├── twin.py                # 方案二: 非共谋双服务器架构 (PRG 种子掩码, 不升环)
+│   └── track.py               # HierAthfheTrack / TwinAthfheTrack 轨道注册
 ├── baseline/                  # 明文鲁棒聚合基线 (SFLBR 对比表，AGGREGATION_REGISTRY 注册表)
 │   ├── fedavg/ krum/ median/ trimmed_mean/ multi_krum/ geometric_median/
 │   ├── centered_clipping/ dnc/ dp_brem/ rflba/   # 每个算法一个子包 (rule.py + README.md)
 │   └── README.md              # 总览表 + 明文模式使用示例
 ├── configs/
-│   └── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR + threshold)
+│   ├── config.yaml            # 唯一主配置 (训练 + 攻击开关 + 层次架构 + PPBR + threshold + RFL)
+│   └── config_rfl.yaml        # RFL 轨道即跑配置 (MNIST+MLP, 云-边-端 split learning)
 ├── scripts/                   # 辅助脚本
 ├── tests/                     # 单元/集成测试
 ├── doc/                       # 解释性文档 (攻击原理 / 层次架构等)
@@ -102,6 +122,17 @@ python main.py
 #     combiner: "client" # "client"=场景B-服务器盲(推荐) | "server"=场景A
 python main.py
 
+# RFL 鲁棒+可验证联邦学习（Zhou 等 TDSC 2026；恶意云威胁模型，不经 CKKS，
+# 自动启用云-边-端三层 split learning；cs_tamper/simulate_ifgia 演示可验证性）
+python main.py --config configs/config_rfl.yaml --output-dir results/test_rfl
+
+# AThFHE 两方案（USENIX Sec'25 ATASSES 扩展；外层 CKKS × 内层联合解密密钥消元；
+# athfhe_hier=分簇层次架构(内层升环), athfhe_twin=双服务器非共谋(种子掩码不升环)；
+# 两条轨道互斥、与 ppbr/rfl/threshold 互斥，配置段见 configs/config.yaml 末尾）
+#   athfhe_twin:
+#     enabled: true
+python main.py
+
 # 明文鲁棒聚合基线（关加密 + 选 baseline/ 规则 + 可叠加攻击，见 baseline/README.md）
 #   encryption:
 #     enabled: false
@@ -132,7 +163,7 @@ python main.py --config path/to/config.yaml
 攻击实现库 `hfl_attacks/` 与配置的关系：
 
 - **`hfl_attacks/` = 攻击实现库**：25 个攻击类实现统一接口（`DataPoisoner` / `ClientUpdateAttack` / `SystemAttack` / `PrivacyAttack`），通过 `@register_attack` 注册到 `ATTACK_REGISTRY`；`main.py` 按 `attack.name` 实例化并注入训练循环（数据投毒替换恶意客户端 `train_loader`；模型/系统投毒在客户端本地明文域篡改更新；DoS 类按轮次剔除不上传的客户端；隐私推断不修改训练过程，指标用 `hfl_attacks/runner.py` 单独评估）。
-- **防御**（`ckks_fed/defenses/`）：median / krum / trimmed_mean 等明文域聚合规则与异常检测。它们需要明文坐标值，**在当前 CKKS 密文聚合路径下不生效**（密文不可解密），仅保留作明文对照与未来在边缘可信节点上落地的候选。
+- **防御**（`ckks/defenses/`）：median / krum / trimmed_mean 等明文域聚合规则与异常检测。它们需要明文坐标值，**在当前 CKKS 密文聚合路径下不生效**（密文不可解密），仅保留作明文对照与未来在边缘可信节点上落地的候选。
 
 | 类别 | 攻击 |
 |------|------|
@@ -300,7 +331,7 @@ sequenceDiagram
 |------|------|-----------|------|
 | PLHE 云密钥对 (pk_A, sk_A) | 1 对，仅云持有 | `PPBRKeyContext`（cloud_ctx，含 sk_A） | ✅ |
 | PLHE 边缘密钥对 (pk_{A_i}, sk_{A_i}) | l 对，边缘 A_i 各自持有 | 每边缘一个 `PPBRKeyContext`（edge_ctxs，私钥边缘自持，公钥注册到云） | ✅ |
-| SA 客户端密钥 (sk_i, pk_i, b_i) | 每客户端一组（DH 协商 + Shamir 分片 b_i） | **真实实现**（`ppbr/sa.py`）：每轮临时 X25519 密钥对，成对种子=HKDF(DH(sk_i,pk_j))；sk_i 与 b_i 均 Shamir (t,n−1) 分片，early/late 两阶段掉线恢复（私钥重建路径，见 doc/ppbr.md §3.2）；`sa_key_exchange: sim` 退回种子模拟 | ✅ |
+| SA 客户端密钥 (sk_i, pk_i, b_i) | 每客户端一组（DH 协商 + Shamir 分片 b_i） | **真实实现**（`base/sa.py`）：每轮临时 X25519 密钥对，成对种子=HKDF(DH(sk_i,pk_j))；sk_i 与 b_i 均 Shamir (t,n−1) 分片，early/late 两阶段掉线恢复（私钥重建路径，见 doc/ppbr.md §3.2）；`sa_key_exchange: sim` 退回种子模拟 | ✅ |
 | CLDP 参数 (ε_χ, L, L') | 公开 | `PPBRConfig` | ✅ |
 
 差异说明：范数盲化中论文在 [·]_{A_i} 密文上同态算出 ‖m'‖² 并以 (x'_i)² 盲化
@@ -312,16 +343,16 @@ sequenceDiagram
 | 功能 | 文件 |
 |------|------|
 | 实验编排 / 单轮流程 | `main.py` (`CKKSFedExperiment`) |
-| 客户端训练 / 加密上传 | `ckks_fed/client.py` (`FederatedClient`) |
-| 密文聚合 / 掩码投票 | `ckks_fed/server.py` (`AggregationServer`) |
-| CKKS 上下文 / 同态运算 | `ckks_fed/crypto.py` (`CKKSManager`) |
-| slot packing / TopK 稀疏化 | `ckks_fed/packing.py` / `ckks_fed/sparsification.py` |
-| 全局掩码投票 | `ckks_fed/global_mask_vote.py` |
-| PTopk 残差补偿 | `ckks_fed/ptopk.py` |
-| 层次架构（云-边-端 / UAV） | `ckks_fed/hierarchy.py` |
+| 客户端训练 / 加密上传 | `ckks/client.py` (`FederatedClient`) |
+| 密文聚合 / 掩码投票 | `ckks/server.py` (`AggregationServer`) |
+| CKKS 上下文 / 同态运算 | `ckks/crypto.py` (`CKKSManager`) |
+| slot packing / TopK 稀疏化 | `ckks/packing.py` / `ckks/sparsification.py` |
+| 全局掩码投票 | `ckks/global_mask_vote.py` |
+| PTopk 残差补偿 | `ckks/ptopk.py` |
+| 层次架构（云-边-端 / UAV） | `ckks/hierarchy.py` |
 | PPBR 拜占庭鲁棒（算法 2/3/4/5 数学机制） | `ppbr/controller.py` |
 | PPBR 完整协议（PLHE + SA 掩码 + 范数盲化） | `ppbr/protocol.py` + `ppbr/crypto.py` |
-| PPBR 真实 SA（X25519 协商 / Shamir 掉线恢复） | `ppbr/sa.py` |
+| PPBR 真实 SA（X25519 协商 / Shamir 掉线恢复） | `base/sa.py` |
 | PPBR 阅读笔记（论文全文技术细节） | `paperlist/ppbr_notes.md` |
 | 攻击接口 / 注册表 | `hfl_attacks/base.py` (`ATTACK_REGISTRY`) |
 | 攻击评估 CLI | `hfl_attacks/runner.py` |
