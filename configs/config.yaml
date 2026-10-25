@@ -461,3 +461,21 @@ athfhe_twin:
   scale_bits: 40
   smudge_bits: 10        # B_sm：掩码噪声界
   dropout: 0             # 随机掉线客户端数（|T|-dropout ≥ threshold 才能解密）
+
+# ATASSES 论文基线（USENIX Sec'25 单级 (T,N)-Shamir + BFV 内层两回合）。
+# 实现上 = athfhe_hier 强制 num_clusters=1 的退化（簇间加法拆分平凡），
+# 参数字段与 athfhe_hier 相同（此处无 num_clusters——恒为 1）。
+# 用途：与方案一/方案二在完全相同参数下对比通信量（scripts/benchmark_athfhe.py）。
+athfhe_atasses:
+  enabled: false
+  cluster_threshold: 2   # T：全局门限（单簇 (T,N)-Shamir）
+  ring_degree: 256
+  outer_modulus_bits: 60
+  scale_bits: 40
+  inner_noise_bits: 20   # B'：Q' > 2·N·Q²·B'（单簇 n_c=N，N 大时 Q' 膨胀最快）
+  smudge_bits: 10
+  dropout: 0
+  parallel: true
+  parallel_workers: 0
+  parallel_progress: false
+  real_coeff_bits: 218   # 等效真实 CKKS 折算系数位宽（0 = 关闭折算）

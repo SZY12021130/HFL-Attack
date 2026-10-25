@@ -1,0 +1,13 @@
+# ============================================================================
+# 实验：ATASSES 论文基线（USENIX Sec'25 单级 (T,N)-Shamir + BFV 内层两回合）
+# ============================================================================
+# = athfhe_hier 强制 num_clusters=1 的忠实复现，用于与方案一/方案二在
+# 完全相同参数下对比通信量。参数字段与 config.yaml 的 athfhe_atasses 段一致，
+# 调参直接覆盖对应键（如 system.num_rounds、athfhe_atasses.cluster_threshold）。
+#
+# 运行：python main.py --config configs/config_athfhe_atasses.yaml
+
+extends: config.yaml
+
+athfhe_atasses:
+  enabled: true

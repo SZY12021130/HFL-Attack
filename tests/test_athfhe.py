@@ -578,3 +578,56 @@ def test_track_straggler_round_time(tmp_path):
     assert all(s >= t for s, t in zip(sim, train))
     assert all(t >= 0 for t in m['upload_time'])
     assert all(t >= 0 for t in m['download_time'])
+
+
+# =====================================================================
+# 10. ATASSES 基线（hier 单簇退化 = 论文原版忠实复现）
+# =====================================================================
+def test_atasses_single_cluster_end_to_end():
+    """HierATHFHE(num_clusters=1) 端到端：误差 <1e-6 + T1≠T2 异步掉线"""
+    from athfhe.hier import HierATHFHE
+    proto = HierATHFHE(num_clusters=1, cluster_threshold=2, ring_degree=M_SMALL,
+                       outer_modulus_bits=Q_BITS, scale_bits=30,
+                       inner_noise_bits=8, smudge_bits=4,
+                       cluster_sizes=[6], seed=41, parallel=False)
+    assert proto.C == 1 and proto.cluster_sizes == [6]
+    chunks = _grad_chunks(6, 2, seed=50)
+    agg, cost = proto.run_protocol(chunks)
+    expected = [sum(chunks[c][b] for c in range(6)) for b in range(2)]
+    for b in range(2):
+        assert np.max(np.abs(agg[b] - expected[b])) < 1e-6
+    # 单簇全局 T 的异步掉线（T1≠T2）
+    agg2, _ = proto.run_protocol(chunks, online1=[0, 2, 3, 5],
+                                 online2=[1, 2, 4, 5])
+    want = sum(chunks[c][0] for c in [0, 2, 3, 5])
+    assert np.max(np.abs(agg2[0] - want)) < 1e-6
+    # 逐流程键齐全
+    for k in ('athfhe_comm_p1_upload', 'athfhe_comm_p2_ct',
+              'athfhe_comm_p2_ek', 'athfhe_comm_p3_dkshare',
+              'athfhe_comm_p3_bc', 'athfhe_comm_total_bytes'):
+        assert k in cost and cost[k] > 0
+
+
+@pytest.mark.slow
+def test_atasses_track_config_resolution(tmp_path):
+    """configs/config_athfhe_atasses.yaml → active_track = AtassesTrack，
+    且内部强制 num_clusters=1（HierATHFHE C=1）"""
+    from main import CKKSFedExperiment
+    exp = CKKSFedExperiment('configs/config_athfhe_atasses.yaml',
+                            output_dir=str(tmp_path))
+    assert exp.active_track.name == 'athfhe_atasses'
+    assert exp.athfhe.C == 1
+    assert exp.athfhe.t_c == exp.config['athfhe_atasses']['cluster_threshold']
+
+
+@pytest.mark.slow
+def test_atasses_conflict_raises(tmp_path):
+    """轨道互斥：athfhe_atasses + athfhe_hier 同开必须拒绝启动"""
+    path = _write_cfg(tmp_path, 'athfhe_hier',
+                      extra=lambda c: c.update(
+                          {'athfhe_atasses': {'enabled': True,
+                                              'cluster_threshold': 2,
+                                              'ring_degree': 64}}))
+    from main import CKKSFedExperiment
+    with pytest.raises(ValueError, match="冲突"):
+        CKKSFedExperiment(path, output_dir=str(tmp_path))

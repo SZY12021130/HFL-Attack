@@ -3,6 +3,8 @@ athfhe/track.py：AThFHE 两方案轨道（USENIX Sec'25 任意门限 FHE 扩展
 =====================================================================
 
 - HierAthfheTrack：方案一 分簇层次架构（athfhe/hier.py，内层升环 Q'）；
+- AtassesTrack：论文 ATASSES 基线（athfhe/hier.py 令 num_clusters=1 的
+  忠实复现：单级 (T,N)-Shamir + BFV 内层两回合，数学上与方案一退化同构）；
 - TwinAthfheTrack：方案二 非共谋双服务器架构（athfhe/twin.py，PRG 种子
   掩码、不升环、单轮发完即走）。
 
@@ -18,6 +20,7 @@ global_params 本地训练 → 攻击注入 → update dict 展平/切块 → �
 
 import math
 import time
+from typing import Optional
 
 import numpy as np
 import torch
@@ -385,11 +388,51 @@ def _run_athfhe_round(exp, round_num: int, proto, kind: str) -> dict:
     }
 
 
+def _setup_hier(exp, cfg_key: str, c_override: Optional[int] = None) -> dict:
+    """hier / atasses 共用的 HierATHFHE 初始化。
+
+    Args:
+        exp: 实验实例
+        cfg_key: 配置段名（'athfhe_hier' / 'athfhe_atasses'）
+        c_override: 强制簇数（ATASSES 基线 = 1，即论文单级 (T,N)-Shamir
+                    + BFV 内层两回合协议的退化形态）
+
+    Returns:
+        该轨道的配置段（同时存入 exp.athfhe_cfg / exp.athfhe）
+    """
+    cfg = exp.config[cfg_key]
+    exp.athfhe_cfg = cfg
+    t_c = int(cfg.get('cluster_threshold', 2))
+    num_clients = exp.config['system']['num_clients']
+    C = int(c_override if c_override is not None
+            else cfg.get('num_clusters', 2))
+    # 均分客户端到 C 簇（余数摊到前几个簇），每簇必须 ≥ t_c
+    base, rem = divmod(num_clients, C)
+    cluster_sizes = [base + (1 if c < rem else 0) for c in range(C)]
+    if any(n < t_c for n in cluster_sizes):
+        raise ValueError(
+            f"{cfg_key}：每簇客户端数必须 ≥ t_c={t_c}（当前分簇 {cluster_sizes}），"
+            f"请调大 num_clients 或调小 num_clusters/cluster_threshold")
+    exp.athfhe = HierATHFHE(
+        num_clusters=C, cluster_threshold=t_c,
+        ring_degree=int(cfg.get('ring_degree', 256)),
+        outer_modulus_bits=int(cfg.get('outer_modulus_bits', 60)),
+        scale_bits=int(cfg.get('scale_bits', 40)),
+        inner_noise_bits=int(cfg.get('inner_noise_bits', 20)),
+        smudge_bits=int(cfg.get('smudge_bits', 10)),
+        cluster_sizes=cluster_sizes,
+        seed=exp.config['system'].get('random_seed', 42),
+        parallel=bool(cfg.get('parallel', True)),
+        parallel_workers=int(cfg.get('parallel_workers', 0)),
+        parallel_progress=bool(cfg.get('parallel_progress', False)))
+    return cfg
+
+
 class HierAthfheTrack(Track):
     """方案一轨道：分簇层次 CKKS-ATASSES（内层升环 Q' > 2·n_c·Q²·B'）"""
 
     name = 'athfhe_hier'
-    conflicts = ('athfhe_twin', 'ppbr', 'rfl', 'ckks')
+    conflicts = ('athfhe_atasses', 'athfhe_twin', 'ppbr', 'rfl', 'ckks')
     supports_client_attacks = True
     needs_checkpoint = False
 
@@ -401,31 +444,9 @@ class HierAthfheTrack(Track):
 
     def init_protocol(self, exp) -> None:
         _check_conflicts(exp.config, 'athfhe_hier', 'athfhe_twin')
+        _check_conflicts(exp.config, 'athfhe_hier', 'athfhe_atasses')
         _force_full_sampling(exp)
-        cfg = exp.config['athfhe_hier']
-        exp.athfhe_cfg = cfg
-        C = int(cfg.get('num_clusters', 2))
-        t_c = int(cfg.get('cluster_threshold', 2))
-        num_clients = exp.config['system']['num_clients']
-        # 均分客户端到 C 簇（余数摊到前几个簇），每簇必须 ≥ t_c
-        base, rem = divmod(num_clients, C)
-        cluster_sizes = [base + (1 if c < rem else 0) for c in range(C)]
-        if any(n < t_c for n in cluster_sizes):
-            raise ValueError(
-                f"athfhe_hier：每簇客户端数必须 ≥ t_c={t_c}（当前分簇 {cluster_sizes}），"
-                f"请调大 num_clients 或调小 num_clusters/cluster_threshold")
-        exp.athfhe = HierATHFHE(
-            num_clusters=C, cluster_threshold=t_c,
-            ring_degree=int(cfg.get('ring_degree', 256)),
-            outer_modulus_bits=int(cfg.get('outer_modulus_bits', 60)),
-            scale_bits=int(cfg.get('scale_bits', 40)),
-            inner_noise_bits=int(cfg.get('inner_noise_bits', 20)),
-            smudge_bits=int(cfg.get('smudge_bits', 10)),
-            cluster_sizes=cluster_sizes,
-            seed=exp.config['system'].get('random_seed', 42),
-            parallel=bool(cfg.get('parallel', True)),
-            parallel_workers=int(cfg.get('parallel_workers', 0)),
-            parallel_progress=bool(cfg.get('parallel_progress', False)))
+        cfg = _setup_hier(exp, 'athfhe_hier')
         p = exp.athfhe
         tree([
             ("🛡️", f"AThFHE-Hier: M={p.M}  |  Q={p.ctx_outer.q.bit_length()}bit"
@@ -462,11 +483,63 @@ class HierAthfheTrack(Track):
         _athfhe_flow_report(exp, lines, m, 'hier')
 
 
+class AtassesTrack(HierAthfheTrack):
+    """ATASSES 基线轨道：论文原版（USENIX Sec'25）的忠实复现。
+
+    数学上与 HierATHFHE 令 num_clusters=1 完全同构（簇间加法拆分退化为
+    平凡：S^(1)=S），即单级 (T,N)-Shamir + BFV 内层加密（升环
+    Q' > 2·N·Q²·B'）+ 两回合解密。单独成轨道的目的：与方案一/方案二在
+    完全相同参数下做逐流程通信量对比（见 scripts/benchmark_athfhe.py
+    与 doc/athfhe.md §与 ATASSES 的复杂度对比）。
+    """
+
+    name = 'athfhe_atasses'
+    conflicts = ('athfhe_hier', 'athfhe_twin', 'ppbr', 'rfl', 'ckks')
+
+    def enabled(self, config: dict) -> bool:
+        return bool((config.get('athfhe_atasses') or {}).get('enabled', False))
+
+    def init_protocol(self, exp) -> None:
+        _check_conflicts(exp.config, 'athfhe_atasses', 'athfhe_hier')
+        _check_conflicts(exp.config, 'athfhe_atasses', 'athfhe_twin')
+        _force_full_sampling(exp)
+        _setup_hier(exp, 'athfhe_atasses', c_override=1)
+        p = exp.athfhe
+        tree([
+            ("🛡️", f"ATASSES-baseline: M={p.M}  |  Q={p.ctx_outer.q.bit_length()}bit"
+                   f"  |  Δ=2^{p.delta.bit_length() - 1}  |  C=1（单簇退化，"
+                   f"= 论文 ATASSES 忠实复现）T={p.t_c} N={p.N}"),
+            ("🔐", f"内层升环: Q'={p.ctx_inner.q.bit_length()}bit "
+                   f"(Q'>2·N·Q²·B'，单簇时 n_c=N，N 大时 Q' 位宽膨胀最快)  |  "
+                   f"Δ'=2^{p.delta_prime.bit_length() - 1}  |  "
+                   f"B_sm=2^{p.B_sm.bit_length() - 1} B'=2^{p.B_prime.bit_length() - 1}"),
+        ], indent=1)
+        for c in exp.clients:
+            c.track = "athfhe_atasses"
+
+    def record_key_distribution(self, exp) -> None:
+        tag_info(LogTag.INIT,
+                 "ATASSES-baseline: (T,N)-Shamir 份额随 Setup 分发"
+                 "（每客户端 1 个外层环多项式）")
+
+    def output_prefix(self, exp) -> str:
+        return 'athfhe_atasses'
+
+    def mode_label(self, exp) -> str:
+        return "ATASSES-baseline（论文单级 (T,N)-Shamir + BFV 内层两回合）"
+
+    def upload_label(self, exp) -> str:
+        return "ATASSES 协议消息（外层 CKKS 密文 + 内层升环份额密文）"
+
+    def run_round(self, exp, round_num: int) -> dict:
+        return _run_athfhe_round(exp, round_num, exp.athfhe, 'atasses')
+
+
 class TwinAthfheTrack(Track):
     """方案二轨道：非共谋双服务器 CKKS-ATASSES（PRG 种子掩码、不升环）"""
 
     name = 'athfhe_twin'
-    conflicts = ('athfhe_hier', 'ppbr', 'rfl', 'ckks')
+    conflicts = ('athfhe_hier', 'athfhe_atasses', 'ppbr', 'rfl', 'ckks')
     supports_client_attacks = True
     needs_checkpoint = False
 
@@ -478,6 +551,7 @@ class TwinAthfheTrack(Track):
 
     def init_protocol(self, exp) -> None:
         _check_conflicts(exp.config, 'athfhe_twin', 'athfhe_hier')
+        _check_conflicts(exp.config, 'athfhe_twin', 'athfhe_atasses')
         _force_full_sampling(exp)
         cfg = exp.config['athfhe_twin']
         exp.athfhe_cfg = cfg
@@ -530,4 +604,5 @@ class TwinAthfheTrack(Track):
 
 
 register_track(HierAthfheTrack())
+register_track(AtassesTrack())
 register_track(TwinAthfheTrack())
